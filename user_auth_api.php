@@ -3,11 +3,20 @@
 declare(strict_types=1);
 
 header("Content-Type: application/json; charset=UTF-8");
+header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Methods: POST, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
+
+if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
+    http_response_code(200);
+    exit;
+}
 
 require_once __DIR__ . "/vendor/autoload.php";
 
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
+
 
 /*
 |--------------------------------------------------------------------------
@@ -324,6 +333,148 @@ function saveRefreshToken(
 
 /*
 |--------------------------------------------------------------------------
+| GET BEARER TOKEN
+|--------------------------------------------------------------------------
+*/
+
+function getBearerToken(): string
+{
+    $authorization = "";
+
+    if (isset($_SERVER["HTTP_AUTHORIZATION"])) {
+
+        $authorization = trim(
+            $_SERVER["HTTP_AUTHORIZATION"]
+        );
+
+    } elseif (function_exists("getallheaders")) {
+
+        $headers = getallheaders();
+
+        foreach ($headers as $key => $value) {
+
+            if (strtolower($key) === "authorization") {
+
+                $authorization = trim($value);
+
+                break;
+            }
+        }
+    }
+
+    if ($authorization === "") {
+
+        sendResponse(
+            false,
+            "Authorization token is required",
+            [],
+            401
+        );
+    }
+
+    if (
+        !preg_match(
+            "/^Bearer\s+(.+)$/i",
+            $authorization,
+            $matches
+        )
+    ) {
+
+        sendResponse(
+            false,
+            "Invalid Authorization header",
+            [],
+            401
+        );
+    }
+
+    return trim($matches[1]);
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| AUTHENTICATE USER
+|--------------------------------------------------------------------------
+*/
+
+function authenticateUser(
+    string $secretKey,
+    string $issuer
+): object {
+
+    $token = getBearerToken();
+
+    try {
+
+        $decoded = JWT::decode(
+            $token,
+            new Key(
+                $secretKey,
+                "HS256"
+            )
+        );
+
+    } catch (Throwable $e) {
+
+        sendResponse(
+            false,
+            "Access token expired or invalid",
+            [],
+            401
+        );
+    }
+
+    if (($decoded->type ?? "") !== "access") {
+
+        sendResponse(
+            false,
+            "Invalid access token",
+            [],
+            401
+        );
+    }
+
+    if (($decoded->role ?? "") !== "user") {
+
+        sendResponse(
+            false,
+            "User access required",
+            [],
+            403
+        );
+    }
+
+    if (($decoded->iss ?? "") !== $issuer) {
+
+        sendResponse(
+            false,
+            "Invalid token issuer",
+            [],
+            401
+        );
+    }
+
+    $userId = (int) (
+        $decoded->user_id ?? 0
+    );
+
+    if ($userId <= 0) {
+
+        sendResponse(
+            false,
+            "Invalid user information in token",
+            [],
+            401
+        );
+    }
+
+    return $decoded;
+}
+
+
+/*
+|--------------------------------------------------------------------------
 | REQUEST
 |--------------------------------------------------------------------------
 */
@@ -513,6 +664,7 @@ if ($action === "register") {
             "name" => $name,
             "email" => $email,
             "phone" => $phone,
+            "profile_image_url" => null,
             "role" => "user"
         ],
         201
@@ -555,7 +707,8 @@ if ($action === "login") {
             name,
             email,
             phone,
-            password
+            password,
+            profile_image_url
          FROM userreg_tb
          WHERE email = ?
          LIMIT 1"
@@ -637,6 +790,8 @@ if ($action === "login") {
     $userEmail = (string) $user["email"];
 
     $phone = $user["phone"];
+
+    $profileImageUrl = $user["profile_image_url"];
 
 
     /*
@@ -732,9 +887,472 @@ if ($action === "login") {
             "name" => $name,
             "email" => $userEmail,
             "phone" => $phone,
+            "profile_image_url" => $profileImageUrl,
             "role" => "user",
             "access_token" => $accessToken,
             "refresh_token" => $refreshToken
+        ]
+    );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| GET PROFILE
+|--------------------------------------------------------------------------
+*/
+
+if ($action === "get_profile") {
+
+    $decoded = authenticateUser(
+        $secretKey,
+        $issuer
+    );
+
+    $userId = (int) $decoded->user_id;
+
+
+    $stmt = $con->prepare(
+        "SELECT
+            user_id,
+            name,
+            email,
+            phone,
+            profile_image_url
+         FROM userreg_tb
+         WHERE user_id = ?
+         LIMIT 1"
+    );
+
+
+    if (!$stmt) {
+
+        sendResponse(
+            false,
+            "Failed to prepare profile query",
+            [],
+            500
+        );
+    }
+
+
+    $stmt->bind_param(
+        "i",
+        $userId
+    );
+
+    if (!$stmt->execute()) {
+
+        $error = $stmt->error;
+
+        $stmt->close();
+
+        sendResponse(
+            false,
+            "Failed to get profile",
+            [
+                "error" => $error
+            ],
+            500
+        );
+    }
+
+
+    $result = $stmt->get_result();
+
+
+    if ($result->num_rows === 0) {
+
+        $stmt->close();
+
+        sendResponse(
+            false,
+            "User not found",
+            [],
+            404
+        );
+    }
+
+
+    $user = $result->fetch_assoc();
+
+    $stmt->close();
+
+
+    sendResponse(
+        true,
+        "Profile fetched successfully",
+        [
+            "user" => [
+                "user_id" => (int) $user["user_id"],
+                "name" => $user["name"],
+                "email" => $user["email"],
+                "phone" => $user["phone"],
+                "profile_image_url" => $user["profile_image_url"],
+                "role" => "user"
+            ]
+        ]
+    );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| UPDATE PROFILE
+|--------------------------------------------------------------------------
+*/
+
+if ($action === "update_profile") {
+
+    $decoded = authenticateUser(
+        $secretKey,
+        $issuer
+    );
+
+    $userId = (int) $decoded->user_id;
+
+
+    /*
+    | GET CURRENT USER
+    */
+
+    $stmt = $con->prepare(
+        "SELECT
+            name,
+            email,
+            phone,
+            profile_image_url
+         FROM userreg_tb
+         WHERE user_id = ?
+         LIMIT 1"
+    );
+
+
+    if (!$stmt) {
+
+        sendResponse(
+            false,
+            "Failed to prepare profile query",
+            [],
+            500
+        );
+    }
+
+
+    $stmt->bind_param(
+        "i",
+        $userId
+    );
+
+    $stmt->execute();
+
+    $result = $stmt->get_result();
+
+
+    if ($result->num_rows === 0) {
+
+        $stmt->close();
+
+        sendResponse(
+            false,
+            "User not found",
+            [],
+            404
+        );
+    }
+
+
+    $currentUser = $result->fetch_assoc();
+
+    $stmt->close();
+
+
+    /*
+    | UPDATED VALUES
+    */
+
+    $name = array_key_exists("name", $data)
+        ? trim((string) $data["name"])
+        : (string) $currentUser["name"];
+
+
+    $email = array_key_exists("email", $data)
+        ? strtolower(trim((string) $data["email"]))
+        : (string) $currentUser["email"];
+
+
+    $phone = array_key_exists("phone", $data)
+        ? trim((string) $data["phone"])
+        : (string) $currentUser["phone"];
+
+
+    /*
+    | PROFILE IMAGE
+    |
+    | If profile_image_url is omitted:
+    | keep existing image.
+    |
+    | If profile_image_url is null or "":
+    | remove image.
+    */
+
+    if (array_key_exists("profile_image_url", $data)) {
+
+        $profileImageUrl = $data["profile_image_url"];
+
+        if ($profileImageUrl !== null) {
+
+            $profileImageUrl = trim(
+                (string) $profileImageUrl
+            );
+
+            if ($profileImageUrl === "") {
+                $profileImageUrl = null;
+            }
+        }
+
+    } else {
+
+        $profileImageUrl = $currentUser["profile_image_url"];
+    }
+
+
+    /*
+    | VALIDATION
+    */
+
+    if ($name === "") {
+
+        sendResponse(
+            false,
+            "Name cannot be empty",
+            [],
+            400
+        );
+    }
+
+
+    if ($email === "") {
+
+        sendResponse(
+            false,
+            "Email cannot be empty",
+            [],
+            400
+        );
+    }
+
+
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+
+        sendResponse(
+            false,
+            "Invalid email address",
+            [],
+            400
+        );
+    }
+
+
+    if ($phone === "") {
+
+        sendResponse(
+            false,
+            "Phone cannot be empty",
+            [],
+            400
+        );
+    }
+
+
+    /*
+    | CHECK EMAIL DUPLICATE
+    */
+
+    $checkStmt = $con->prepare(
+        "SELECT user_id
+         FROM userreg_tb
+         WHERE email = ?
+         AND user_id != ?
+         LIMIT 1"
+    );
+
+
+    if (!$checkStmt) {
+
+        sendResponse(
+            false,
+            "Failed to prepare email check",
+            [],
+            500
+        );
+    }
+
+
+    $checkStmt->bind_param(
+        "si",
+        $email,
+        $userId
+    );
+
+    $checkStmt->execute();
+
+    $emailResult = $checkStmt->get_result();
+
+
+    if ($emailResult->num_rows > 0) {
+
+        $checkStmt->close();
+
+        sendResponse(
+            false,
+            "Email is already used by another account",
+            [],
+            409
+        );
+    }
+
+
+    $checkStmt->close();
+
+
+    /*
+    | UPDATE PROFILE
+    */
+
+    $updateStmt = $con->prepare(
+        "UPDATE userreg_tb
+         SET
+            name = ?,
+            email = ?,
+            phone = ?,
+            profile_image_url = ?
+         WHERE user_id = ?"
+    );
+
+
+    if (!$updateStmt) {
+
+        sendResponse(
+            false,
+            "Failed to prepare profile update",
+            [],
+            500
+        );
+    }
+
+
+    $updateStmt->bind_param(
+        "ssssi",
+        $name,
+        $email,
+        $phone,
+        $profileImageUrl,
+        $userId
+    );
+
+
+    if (!$updateStmt->execute()) {
+
+        $error = $updateStmt->error;
+
+        $updateStmt->close();
+
+        sendResponse(
+            false,
+            "Profile update failed",
+            [
+                "error" => $error
+            ],
+            500
+        );
+    }
+
+
+    $updateStmt->close();
+
+
+    /*
+    | GENERATE NEW ACCESS TOKEN
+    |
+    | Name/email may have changed,
+    | so update JWT as well.
+    */
+
+    $newAccessToken = generateAccessToken(
+        $secretKey,
+        $issuer,
+        $accessTokenExpiry,
+        $userId,
+        $name,
+        $email
+    );
+
+
+    $tokenStmt = $con->prepare(
+        "UPDATE userreg_tb
+         SET token = ?
+         WHERE user_id = ?"
+    );
+
+
+    if (!$tokenStmt) {
+
+        sendResponse(
+            false,
+            "Profile updated but failed to refresh access token",
+            [
+                "user_id" => $userId,
+                "name" => $name,
+                "email" => $email,
+                "phone" => $phone,
+                "profile_image_url" => $profileImageUrl
+            ],
+            500
+        );
+    }
+
+
+    $tokenStmt->bind_param(
+        "si",
+        $newAccessToken,
+        $userId
+    );
+
+
+    if (!$tokenStmt->execute()) {
+
+        $error = $tokenStmt->error;
+
+        $tokenStmt->close();
+
+        sendResponse(
+            false,
+            "Profile updated but failed to refresh access token",
+            [
+                "error" => $error
+            ],
+            500
+        );
+    }
+
+
+    $tokenStmt->close();
+
+
+    sendResponse(
+        true,
+        "Profile updated successfully",
+        [
+            "user" => [
+                "user_id" => $userId,
+                "name" => $name,
+                "email" => $email,
+                "phone" => $phone,
+                "profile_image_url" => $profileImageUrl,
+                "role" => "user"
+            ],
+            "access_token" => $newAccessToken
         ]
     );
 }
@@ -779,6 +1397,26 @@ if ($action === "refresh") {
             sendResponse(
                 false,
                 "Invalid refresh token",
+                [],
+                401
+            );
+        }
+
+        if (($decoded->role ?? "") !== "user") {
+
+            sendResponse(
+                false,
+                "Invalid refresh token role",
+                [],
+                401
+            );
+        }
+
+        if (($decoded->iss ?? "") !== $issuer) {
+
+            sendResponse(
+                false,
+                "Invalid refresh token issuer",
                 [],
                 401
             );
@@ -883,7 +1521,8 @@ if ($action === "refresh") {
         "SELECT
             name,
             email,
-            phone
+            phone,
+            profile_image_url
          FROM userreg_tb
          WHERE user_id = ?
          LIMIT 1"
@@ -934,6 +1573,8 @@ if ($action === "refresh") {
     $userEmail = (string) $user["email"];
 
     $phone = $user["phone"];
+
+    $profileImageUrl = $user["profile_image_url"];
 
 
     /*
@@ -1006,6 +1647,10 @@ if ($action === "refresh") {
             "access_token" => $newAccessToken,
             "refresh_token" => $refreshToken,
             "user_id" => $userId,
+            "name" => $name,
+            "email" => $userEmail,
+            "phone" => $phone,
+            "profile_image_url" => $profileImageUrl,
             "role" => "user"
         ]
     );
@@ -1123,7 +1768,7 @@ if ($action === "logout") {
 
 sendResponse(
     false,
-    "Invalid action. Use register, login, refresh or logout",
+    "Invalid action. Use register, login, get_profile, update_profile, refresh or logout",
     [],
     400
 );

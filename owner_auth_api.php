@@ -3,10 +3,26 @@
 declare(strict_types=1);
 
 header("Content-Type: application/json; charset=UTF-8");
+header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Methods: POST, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
 
 require_once __DIR__ . "/vendor/autoload.php";
 
 use Firebase\JWT\JWT;
+
+
+/*
+|--------------------------------------------------------------------------
+| OPTIONS
+|--------------------------------------------------------------------------
+*/
+
+if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
+
+    http_response_code(200);
+    exit;
+}
 
 
 /*
@@ -41,7 +57,24 @@ function sendResponse(
 
 /*
 |--------------------------------------------------------------------------
-| REQUEST
+| METHOD CHECK
+|--------------------------------------------------------------------------
+*/
+
+if ($_SERVER["REQUEST_METHOD"] !== "POST") {
+
+    sendResponse(
+        false,
+        "Only POST method is allowed",
+        [],
+        405
+    );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| REQUEST DATA
 |--------------------------------------------------------------------------
 */
 
@@ -68,6 +101,12 @@ if ($input !== false && trim($input) !== "") {
 }
 
 
+/*
+|--------------------------------------------------------------------------
+| ACTION
+|--------------------------------------------------------------------------
+*/
+
 $action = strtolower(
     trim($data["action"] ?? "")
 );
@@ -87,6 +126,12 @@ $password = getenv("DB_PASSWORD");
 
 $secretKey = getenv("JWT_SECRET");
 
+
+/*
+|--------------------------------------------------------------------------
+| ENVIRONMENT CHECK
+|--------------------------------------------------------------------------
+*/
 
 if (
     $host === false ||
@@ -124,7 +169,7 @@ if (
 
 /*
 |--------------------------------------------------------------------------
-| AIVEN SSL CONNECTION
+| AIVEN MYSQL SSL CONNECTION
 |--------------------------------------------------------------------------
 */
 
@@ -162,7 +207,8 @@ try {
     )) {
 
         throw new RuntimeException(
-            mysqli_connect_error() ?: "Unknown database connection error"
+            mysqli_connect_error()
+            ?: "Unknown database connection error"
         );
     }
 
@@ -206,9 +252,9 @@ if ($action !== "login") {
 */
 
 $ownerUsername = trim(
-    $data["username"] ??
-    $data["email"] ??
-    ""
+    $data["username"]
+    ?? $data["email"]
+    ?? ""
 );
 
 $loginPassword = $data["password"] ?? "";
@@ -238,7 +284,8 @@ $stmt = $con->prepare(
     "SELECT
         id,
         username,
-        password
+        password,
+        profile_image_url
      FROM ownerreg_tb
      WHERE username = ?
      LIMIT 1"
@@ -320,9 +367,17 @@ if (!password_verify(
 }
 
 
+/*
+|--------------------------------------------------------------------------
+| OWNER DATA
+|--------------------------------------------------------------------------
+*/
+
 $ownerId = (int) $owner["id"];
 
 $name = (string) $owner["username"];
+
+$profileImageUrl = $owner["profile_image_url"] ?? null;
 
 
 /*
@@ -338,10 +393,15 @@ $accessToken = JWT::encode(
         "iss" => "sporto-api",
         "iat" => $issuedAt,
         "exp" => $issuedAt + 900,
+
         "user_id" => $ownerId,
+
         "name" => $name,
+
         "email" => $name,
+
         "role" => "owner",
+
         "type" => "access"
     ],
     $secretKey,
@@ -411,9 +471,17 @@ sendResponse(
     "Owner login successful",
     [
         "user_id" => $ownerId,
+
         "name" => $name,
+
         "email" => $name,
+
         "role" => "owner",
+
+        "profile_image_url" => $profileImageUrl,
+
         "access_token" => $accessToken
     ]
 );
+
+?>
