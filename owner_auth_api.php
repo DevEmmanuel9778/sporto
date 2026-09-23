@@ -249,6 +249,9 @@ if ($action !== "login") {
 |--------------------------------------------------------------------------
 | OWNER LOGIN DATA
 |--------------------------------------------------------------------------
+|
+| Accept username or email from Flutter.
+|
 */
 
 $ownerUsername = trim(
@@ -284,10 +287,11 @@ $stmt = $con->prepare(
     "SELECT
         id,
         username,
+        email,
         password,
         profile_image_url
      FROM ownerreg_tb
-     WHERE username = ?
+     WHERE username = ? OR email = ?
      LIMIT 1"
 );
 
@@ -304,7 +308,8 @@ if (!$stmt) {
 
 
 $stmt->bind_param(
-    "s",
+    "ss",
+    $ownerUsername,
     $ownerUsername
 );
 
@@ -377,6 +382,8 @@ $ownerId = (int) $owner["id"];
 
 $name = (string) $owner["username"];
 
+$email = (string) ($owner["email"] ?? "");
+
 $profileImageUrl = $owner["profile_image_url"] ?? null;
 
 
@@ -398,7 +405,7 @@ $accessToken = JWT::encode(
 
         "name" => $name,
 
-        "email" => $name,
+        "email" => $email,
 
         "role" => "owner",
 
@@ -474,7 +481,7 @@ sendResponse(
 
         "name" => $name,
 
-        "email" => $name,
+        "email" => $email,
 
         "role" => "owner",
 
