@@ -20,6 +20,15 @@ use Firebase\JWT\Key;
 
 /*
 |--------------------------------------------------------------------------
+| MYSQLI ERROR MODE
+|--------------------------------------------------------------------------
+*/
+
+mysqli_report(MYSQLI_REPORT_OFF);
+
+
+/*
+|--------------------------------------------------------------------------
 | RESPONSE
 |--------------------------------------------------------------------------
 */
@@ -159,7 +168,7 @@ try {
         null
     );
 
-    if (!mysqli_real_connect(
+    $connected = mysqli_real_connect(
         $con,
         $host,
         $username,
@@ -168,7 +177,10 @@ try {
         $port,
         null,
         MYSQLI_CLIENT_SSL
-    )) {
+    );
+
+    if (!$connected) {
+
         throw new RuntimeException(
             mysqli_connect_error() ?: "Unknown database connection error"
         );
@@ -548,7 +560,9 @@ if ($action === "register") {
 
 
     /*
+    |--------------------------------------------------------------------------
     | CHECK EXISTING USER
+    |--------------------------------------------------------------------------
     */
 
     $checkStmt = $con->prepare(
@@ -573,7 +587,21 @@ if ($action === "register") {
         $email
     );
 
-    $checkStmt->execute();
+    if (!$checkStmt->execute()) {
+
+        $error = $checkStmt->error;
+
+        $checkStmt->close();
+
+        sendResponse(
+            false,
+            "Failed to check existing user",
+            [
+                "error" => $error
+            ],
+            500
+        );
+    }
 
     $result = $checkStmt->get_result();
 
@@ -593,7 +621,9 @@ if ($action === "register") {
 
 
     /*
+    |--------------------------------------------------------------------------
     | HASH PASSWORD
+    |--------------------------------------------------------------------------
     */
 
     $hashedPassword = password_hash(
@@ -601,9 +631,24 @@ if ($action === "register") {
         PASSWORD_DEFAULT
     );
 
+    if ($hashedPassword === false) {
+
+        sendResponse(
+            false,
+            "Failed to secure password",
+            [],
+            500
+        );
+    }
+
 
     /*
+    |--------------------------------------------------------------------------
     | INSERT USER
+    |
+    | token and refresh_token are inserted as empty strings.
+    | This works even if Aiven columns are NOT NULL.
+    |--------------------------------------------------------------------------
     */
 
     $stmt = $con->prepare(
@@ -612,9 +657,11 @@ if ($action === "register") {
             name,
             email,
             phone,
-            password
+            password,
+            token,
+            refresh_token
         )
-        VALUES (?, ?, ?, ?)"
+        VALUES (?, ?, ?, ?, '', '')"
     );
 
     if (!$stmt) {
@@ -651,10 +698,117 @@ if ($action === "register") {
         );
     }
 
-    $userId = $stmt->insert_id;
+    $userId = (int) $stmt->insert_id;
 
     $stmt->close();
 
+
+    if ($userId <= 0) {
+
+        sendResponse(
+            false,
+            "User registration failed: invalid user ID",
+            [],
+            500
+        );
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | GENERATE TOKENS
+    |--------------------------------------------------------------------------
+    */
+
+    $accessToken = generateAccessToken(
+        $secretKey,
+        $issuer,
+        $accessTokenExpiry,
+        $userId,
+        $name,
+        $email
+    );
+
+    $refreshToken = generateRefreshToken(
+        $secretKey,
+        $issuer,
+        $refreshTokenExpiry,
+        $userId,
+        $email
+    );
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | SAVE TOKENS
+    |--------------------------------------------------------------------------
+    */
+
+    $tokenStmt = $con->prepare(
+        "UPDATE userreg_tb
+         SET token = ?,
+             refresh_token = ?
+         WHERE user_id = ?"
+    );
+
+    if (!$tokenStmt) {
+
+        sendResponse(
+            false,
+            "User created but token update failed",
+            [
+                "user_id" => $userId
+            ],
+            500
+        );
+    }
+
+    $tokenStmt->bind_param(
+        "ssi",
+        $accessToken,
+        $refreshToken,
+        $userId
+    );
+
+    if (!$tokenStmt->execute()) {
+
+        $error = $tokenStmt->error;
+
+        $tokenStmt->close();
+
+        sendResponse(
+            false,
+            "User created but token update failed",
+            [
+                "user_id" => $userId,
+                "error" => $error
+            ],
+            500
+        );
+    }
+
+    $tokenStmt->close();
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | SAVE REFRESH TOKEN HASH
+    |--------------------------------------------------------------------------
+    */
+
+    saveRefreshToken(
+        $con,
+        $userId,
+        $refreshToken,
+        $refreshTokenExpiry
+    );
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | REGISTER SUCCESS
+    |--------------------------------------------------------------------------
+    */
 
     sendResponse(
         true,
@@ -665,7 +819,9 @@ if ($action === "register") {
             "email" => $email,
             "phone" => $phone,
             "profile_image_url" => null,
-            "role" => "user"
+            "role" => "user",
+            "access_token" => $accessToken,
+            "refresh_token" => $refreshToken
         ],
         201
     );
@@ -795,7 +951,9 @@ if ($action === "login") {
 
 
     /*
+    |--------------------------------------------------------------------------
     | GENERATE TOKENS
+    |--------------------------------------------------------------------------
     */
 
     $accessToken = generateAccessToken(
@@ -818,12 +976,15 @@ if ($action === "login") {
 
 
     /*
+    |--------------------------------------------------------------------------
     | SAVE TOKENS IN USER TABLE
+    |--------------------------------------------------------------------------
     */
 
     $updateStmt = $con->prepare(
         "UPDATE userreg_tb
-         SET token = ?, refresh_token = ?
+         SET token = ?,
+             refresh_token = ?
          WHERE user_id = ?"
     );
 
@@ -868,7 +1029,9 @@ if ($action === "login") {
 
 
     /*
+    |--------------------------------------------------------------------------
     | SAVE REFRESH TOKEN HASH
+    |--------------------------------------------------------------------------
     */
 
     saveRefreshToken(
@@ -1044,7 +1207,21 @@ if ($action === "update_profile") {
         $userId
     );
 
-    $stmt->execute();
+    if (!$stmt->execute()) {
+
+        $error = $stmt->error;
+
+        $stmt->close();
+
+        sendResponse(
+            false,
+            "Failed to get current profile",
+            [
+                "error" => $error
+            ],
+            500
+        );
+    }
 
     $result = $stmt->get_result();
 
@@ -1088,12 +1265,6 @@ if ($action === "update_profile") {
 
     /*
     | PROFILE IMAGE
-    |
-    | If profile_image_url is omitted:
-    | keep existing image.
-    |
-    | If profile_image_url is null or "":
-    | remove image.
     */
 
     if (array_key_exists("profile_image_url", $data)) {
@@ -1195,7 +1366,21 @@ if ($action === "update_profile") {
         $userId
     );
 
-    $checkStmt->execute();
+    if (!$checkStmt->execute()) {
+
+        $error = $checkStmt->error;
+
+        $checkStmt->close();
+
+        sendResponse(
+            false,
+            "Email check failed",
+            [
+                "error" => $error
+            ],
+            500
+        );
+    }
 
     $emailResult = $checkStmt->get_result();
 
@@ -1274,9 +1459,6 @@ if ($action === "update_profile") {
 
     /*
     | GENERATE NEW ACCESS TOKEN
-    |
-    | Name/email may have changed,
-    | so update JWT as well.
     */
 
     $newAccessToken = generateAccessToken(
@@ -1455,7 +1637,7 @@ if ($action === "refresh") {
 
 
     /*
-    | CHECK DATABASE TOKEN
+    | CHECK DATABASE REFRESH TOKEN
     */
 
     $tokenHash = hash(
@@ -1493,7 +1675,21 @@ if ($action === "refresh") {
         $userId
     );
 
-    $stmt->execute();
+    if (!$stmt->execute()) {
+
+        $error = $stmt->error;
+
+        $stmt->close();
+
+        sendResponse(
+            false,
+            "Refresh token query failed",
+            [
+                "error" => $error
+            ],
+            500
+        );
+    }
 
     $result = $stmt->get_result();
 
@@ -1545,7 +1741,21 @@ if ($action === "refresh") {
         $userId
     );
 
-    $stmt->execute();
+    if (!$stmt->execute()) {
+
+        $error = $stmt->error;
+
+        $stmt->close();
+
+        sendResponse(
+            false,
+            "Failed to get user",
+            [
+                "error" => $error
+            ],
+            500
+        );
+    }
 
     $result = $stmt->get_result();
 
@@ -1592,7 +1802,7 @@ if ($action === "refresh") {
 
 
     /*
-    | UPDATE TOKEN
+    | UPDATE ACCESS TOKEN
     */
 
     $updateStmt = $con->prepare(
@@ -1714,12 +1924,16 @@ if ($action === "logout") {
 
     if (!$stmt->execute()) {
 
+        $error = $stmt->error;
+
         $stmt->close();
 
         sendResponse(
             false,
             "Logout failed",
-            [],
+            [
+                "error" => $error
+            ],
             500
         );
     }
