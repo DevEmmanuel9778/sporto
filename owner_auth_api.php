@@ -19,7 +19,6 @@ use Firebase\JWT\JWT;
 */
 
 if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
-
     http_response_code(200);
     exit;
 }
@@ -250,27 +249,31 @@ if ($action !== "login") {
 | OWNER LOGIN DATA
 |--------------------------------------------------------------------------
 |
-| Accept username or email from Flutter.
+| Login can use either:
+| username/name OR email
 |
 */
 
-$ownerUsername = trim(
+$ownerLogin = trim(
     $data["username"]
+    ?? $data["name"]
     ?? $data["email"]
     ?? ""
 );
 
-$loginPassword = $data["password"] ?? "";
+$loginPassword = (string) (
+    $data["password"] ?? ""
+);
 
 
 if (
-    $ownerUsername === "" ||
+    $ownerLogin === "" ||
     $loginPassword === ""
 ) {
 
     sendResponse(
         false,
-        "Username and password are required",
+        "Name/email and password are required",
         [],
         400
     );
@@ -281,17 +284,28 @@ if (
 |--------------------------------------------------------------------------
 | FIND OWNER
 |--------------------------------------------------------------------------
+|
+| Current Aiven table:
+|
+| id
+| name
+| email
+| password
+| token
+| refresh_token
+| profile_image_url
+|
 */
 
 $stmt = $con->prepare(
     "SELECT
         id,
-        username,
+        name,
         email,
         password,
         profile_image_url
      FROM ownerreg_tb
-     WHERE username = ? OR email = ?
+     WHERE name = ? OR email = ?
      LIMIT 1"
 );
 
@@ -309,8 +323,8 @@ if (!$stmt) {
 
 $stmt->bind_param(
     "ss",
-    $ownerUsername,
-    $ownerUsername
+    $ownerLogin,
+    $ownerLogin
 );
 
 
@@ -340,7 +354,7 @@ if ($result->num_rows === 0) {
 
     sendResponse(
         false,
-        "Invalid username or password",
+        "Invalid name/email or password",
         [],
         401
     );
@@ -360,12 +374,12 @@ $stmt->close();
 
 if (!password_verify(
     $loginPassword,
-    $owner["password"]
+    (string) $owner["password"]
 )) {
 
     sendResponse(
         false,
-        "Invalid username or password",
+        "Invalid name/email or password",
         [],
         401
     );
@@ -380,9 +394,9 @@ if (!password_verify(
 
 $ownerId = (int) $owner["id"];
 
-$name = (string) $owner["username"];
+$name = (string) $owner["name"];
 
-$email = (string) ($owner["email"] ?? "");
+$email = (string) $owner["email"];
 
 $profileImageUrl = $owner["profile_image_url"] ?? null;
 
@@ -398,7 +412,9 @@ $issuedAt = time();
 $accessToken = JWT::encode(
     [
         "iss" => "sporto-api",
+
         "iat" => $issuedAt,
+
         "exp" => $issuedAt + 900,
 
         "user_id" => $ownerId,
