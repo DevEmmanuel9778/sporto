@@ -2,509 +2,181 @@
 
 declare(strict_types=1);
 
-header("Content-Type: application/json; charset=UTF-8");
-header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: POST, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type, Authorization");
+header('Content-Type: application/json; charset=UTF-8');
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Methods: POST, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type, Authorization');
 
-require_once __DIR__ . "/vendor/autoload.php";
+require_once __DIR__ . '/vendor/autoload.php';
 
 use Firebase\JWT\JWT;
 
-
-/*
-|--------------------------------------------------------------------------
-| OPTIONS
-|--------------------------------------------------------------------------
-*/
-
-if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
-    http_response_code(200);
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') {
+    http_response_code(204);
     exit;
 }
 
-
-/*
-|--------------------------------------------------------------------------
-| RESPONSE
-|--------------------------------------------------------------------------
-*/
-
-function sendResponse(
-    bool $status,
-    string $message,
-    array $data = [],
-    int $httpCode = 200
-): never {
-
+function sendResponse(bool $status, string $message, array $data = [], int $httpCode = 200): never
+{
     http_response_code($httpCode);
-
-    echo json_encode(
-        array_merge(
-            [
-                "status" => $status,
-                "message" => $message
-            ],
-            $data
-        ),
-        JSON_UNESCAPED_UNICODE
-    );
-
+    echo json_encode(array_merge(['status' => $status, 'message' => $message], $data), JSON_UNESCAPED_UNICODE);
     exit;
 }
 
-
-/*
-|--------------------------------------------------------------------------
-| METHOD CHECK
-|--------------------------------------------------------------------------
-*/
-
-if ($_SERVER["REQUEST_METHOD"] !== "POST") {
-
-    sendResponse(
-        false,
-        "Only POST method is allowed",
-        [],
-        405
-    );
+if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+    header('Allow: POST, OPTIONS');
+    sendResponse(false, 'Only POST method is allowed', [], 405);
 }
 
-
-/*
-|--------------------------------------------------------------------------
-| REQUEST DATA
-|--------------------------------------------------------------------------
-*/
-
-$input = file_get_contents("php://input");
-
-$data = [];
-
-if ($input !== false && trim($input) !== "") {
-
-    $data = json_decode(
-        $input,
-        true
-    );
-
-    if (!is_array($data)) {
-
-        sendResponse(
-            false,
-            "Invalid JSON request",
-            [],
-            400
-        );
-    }
+$input = file_get_contents('php://input');
+$data = json_decode($input ?: '', true);
+if (!is_array($data)) {
+    sendResponse(false, 'Valid JSON request body is required', [], 400);
 }
 
-
-/*
-|--------------------------------------------------------------------------
-| ACTION
-|--------------------------------------------------------------------------
-*/
-
-$action = strtolower(
-    trim($data["action"] ?? "")
-);
-
-
-/*
-|--------------------------------------------------------------------------
-| ENVIRONMENT
-|--------------------------------------------------------------------------
-*/
-
-$host = getenv("DB_HOST");
-$port = (int) getenv("DB_PORT");
-$dbname = getenv("DB_NAME");
-$username = getenv("DB_USER");
-$password = getenv("DB_PASSWORD");
-
-$secretKey = getenv("JWT_SECRET");
-
-
-/*
-|--------------------------------------------------------------------------
-| ENVIRONMENT CHECK
-|--------------------------------------------------------------------------
-*/
-
-if (
-    $host === false ||
-    trim($host) === "" ||
-    $port <= 0 ||
-    $dbname === false ||
-    trim($dbname) === "" ||
-    $username === false ||
-    trim($username) === "" ||
-    $password === false
-) {
-
-    sendResponse(
-        false,
-        "Database environment variables are missing or invalid",
-        [],
-        500
-    );
+$action = strtolower(trim((string)($data['action'] ?? '')));
+if (!in_array($action, ['login', 'register'], true)) {
+    sendResponse(false, 'Invalid action. Use login or register', [], 400);
 }
 
+$host = getenv('DB_HOST');
+$port = (int)getenv('DB_PORT');
+$dbname = getenv('DB_NAME');
+$username = getenv('DB_USER');
+$password = getenv('DB_PASSWORD');
+$secretKey = getenv('JWT_SECRET');
 
-if (
-    $secretKey === false ||
-    trim($secretKey) === ""
-) {
-
-    sendResponse(
-        false,
-        "JWT_SECRET environment variable is missing",
-        [],
-        500
-    );
+if ($host === false || trim($host) === '' || $port <= 0 ||
+    $dbname === false || trim($dbname) === '' ||
+    $username === false || trim($username) === '' || $password === false) {
+    sendResponse(false, 'Database environment variables are missing or invalid', [], 500);
 }
-
-
-/*
-|--------------------------------------------------------------------------
-| AIVEN MYSQL SSL CONNECTION
-|--------------------------------------------------------------------------
-*/
+if ($secretKey === false || trim($secretKey) === '') {
+    sendResponse(false, 'JWT_SECRET environment variable is missing', [], 500);
+}
 
 try {
-
+    mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
     $con = mysqli_init();
-
     if ($con === false) {
-
-        throw new RuntimeException(
-            "Failed to initialize MySQL connection"
-        );
+        throw new RuntimeException('Could not initialize database connection');
     }
-
-
-    mysqli_ssl_set(
-        $con,
-        null,
-        null,
-        null,
-        null,
-        null
-    );
-
-
-    if (!mysqli_real_connect(
-        $con,
-        $host,
-        $username,
-        $password,
-        $dbname,
-        $port,
-        null,
-        MYSQLI_CLIENT_SSL
-    )) {
-
-        throw new RuntimeException(
-            mysqli_connect_error()
-            ?: "Unknown database connection error"
-        );
-    }
-
+    mysqli_ssl_set($con, null, null, null, null, null);
+    mysqli_real_connect($con, $host, $username, $password, $dbname, $port, null, MYSQLI_CLIENT_SSL);
+    $con->set_charset('utf8mb4');
 } catch (Throwable $e) {
-
-    sendResponse(
-        false,
-        "Database connection failed",
-        [
-            "error" => $e->getMessage()
-        ],
-        500
-    );
+    error_log('Owner auth database connection failed: ' . $e->getMessage());
+    sendResponse(false, 'Database connection failed', [], 500);
 }
 
+if ($action === 'register') {
+    $name = trim((string)($data['name'] ?? ''));
+    $email = strtolower(trim((string)($data['email'] ?? '')));
+    $plainPassword = (string)($data['password'] ?? '');
 
-$con->set_charset("utf8mb4");
+    if (mb_strlen($name) < 2 || mb_strlen($name) > 100) {
+        sendResponse(false, 'Name must contain 2 to 100 characters', [], 422);
+    }
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 254) {
+        sendResponse(false, 'A valid email is required', [], 422);
+    }
+    if (strlen($plainPassword) < 8 || strlen($plainPassword) > 72) {
+        sendResponse(false, 'Password must contain 8 to 72 characters', [], 422);
+    }
 
+    try {
+        // Login supports either name or email; keep both identifiers unique.
+        $check = $con->prepare('SELECT id, name, email FROM ownerreg_tb WHERE name = ? OR email = ? LIMIT 1');
+        $check->bind_param('ss', $name, $email);
+        $check->execute();
+        $existing = $check->get_result()->fetch_assoc();
+        $check->close();
 
-/*
-|--------------------------------------------------------------------------
-| ONLY LOGIN
-|--------------------------------------------------------------------------
-*/
+        if ($existing !== null) {
+            sendResponse(false, 'Name or email is already registered', [], 409);
+        }
 
-if ($action !== "login") {
+        $passwordHash = password_hash($plainPassword, PASSWORD_DEFAULT);
+        if ($passwordHash === false) {
+            throw new RuntimeException('Password hashing failed');
+        }
 
-    sendResponse(
-        false,
-        "Invalid action. Use login",
-        [],
-        400
-    );
+        // Assumes id is AUTO_INCREMENT and token, refresh_token,
+        // profile_image_url are nullable or have defaults.
+        $stmt = $con->prepare('INSERT INTO ownerreg_tb (name, email, password) VALUES (?, ?, ?)');
+        $stmt->bind_param('sss', $name, $email, $passwordHash);
+        $stmt->execute();
+        $ownerId = $con->insert_id;
+        $stmt->close();
+
+        sendResponse(true, 'Owner registered successfully. Please login.', [
+            'user_id' => (int)$ownerId,
+            'name' => $name,
+            'email' => $email,
+            'role' => 'owner',
+        ], 201);
+    } catch (mysqli_sql_exception $e) {
+        if ((int)$e->getCode() === 1062) {
+            sendResponse(false, 'Name or email is already registered', [], 409);
+        }
+        error_log('Owner registration DB error: ' . $e->getMessage());
+        sendResponse(false, 'Registration failed', [], 500);
+    } catch (Throwable $e) {
+        error_log('Owner registration error: ' . $e->getMessage());
+        sendResponse(false, 'Registration failed', [], 500);
+    }
 }
 
-
-/*
-|--------------------------------------------------------------------------
-| OWNER LOGIN DATA
-|--------------------------------------------------------------------------
-|
-| Login can use either:
-| username/name OR email
-|
-*/
-
-$ownerLogin = trim(
-    $data["username"]
-    ?? $data["name"]
-    ?? $data["email"]
-    ?? ""
-);
-
-$loginPassword = (string) (
-    $data["password"] ?? ""
-);
-
-
-if (
-    $ownerLogin === "" ||
-    $loginPassword === ""
-) {
-
-    sendResponse(
-        false,
-        "Name/email and password are required",
-        [],
-        400
-    );
+// Existing owner login response and JWT claim names are preserved.
+$ownerLogin = trim((string)($data['username'] ?? $data['name'] ?? $data['email'] ?? ''));
+$loginPassword = (string)($data['password'] ?? '');
+if ($ownerLogin === '' || $loginPassword === '') {
+    sendResponse(false, 'Name/email and password are required', [], 400);
 }
 
-
-/*
-|--------------------------------------------------------------------------
-| FIND OWNER
-|--------------------------------------------------------------------------
-|
-| Current Aiven table:
-|
-| id
-| name
-| email
-| password
-| token
-| refresh_token
-| profile_image_url
-|
-*/
-
-$stmt = $con->prepare(
-    "SELECT
-        id,
-        name,
-        email,
-        password,
-        profile_image_url
-     FROM ownerreg_tb
-     WHERE name = ? OR email = ?
-     LIMIT 1"
-);
-
-
-if (!$stmt) {
-
-    sendResponse(
-        false,
-        "Database query failed",
-        [],
-        500
+try {
+    $stmt = $con->prepare(
+        'SELECT id, name, email, password, profile_image_url
+         FROM ownerreg_tb WHERE name = ? OR email = ? LIMIT 1'
     );
-}
-
-
-$stmt->bind_param(
-    "ss",
-    $ownerLogin,
-    $ownerLogin
-);
-
-
-if (!$stmt->execute()) {
-
-    $error = $stmt->error;
-
+    $stmt->bind_param('ss', $ownerLogin, $ownerLogin);
+    $stmt->execute();
+    $owner = $stmt->get_result()->fetch_assoc();
     $stmt->close();
 
-    sendResponse(
-        false,
-        "Login query failed",
-        [
-            "error" => $error
-        ],
-        500
-    );
-}
+    if ($owner === null || !password_verify($loginPassword, (string)$owner['password'])) {
+        sendResponse(false, 'Invalid name/email or password', [], 401);
+    }
 
+    $ownerId = (int)$owner['id'];
+    $name = (string)$owner['name'];
+    $email = (string)$owner['email'];
+    $issuedAt = time();
+    $accessToken = JWT::encode([
+        'iss' => 'sporto-api',
+        'iat' => $issuedAt,
+        'exp' => $issuedAt + 900,
+        'user_id' => $ownerId,
+        'name' => $name,
+        'email' => $email,
+        'role' => 'owner',
+        'type' => 'access',
+    ], $secretKey, 'HS256');
 
-$result = $stmt->get_result();
-
-
-if ($result->num_rows === 0) {
-
-    $stmt->close();
-
-    sendResponse(
-        false,
-        "Invalid name/email or password",
-        [],
-        401
-    );
-}
-
-
-$owner = $result->fetch_assoc();
-
-$stmt->close();
-
-
-/*
-|--------------------------------------------------------------------------
-| PASSWORD CHECK
-|--------------------------------------------------------------------------
-*/
-
-if (!password_verify(
-    $loginPassword,
-    (string) $owner["password"]
-)) {
-
-    sendResponse(
-        false,
-        "Invalid name/email or password",
-        [],
-        401
-    );
-}
-
-
-/*
-|--------------------------------------------------------------------------
-| OWNER DATA
-|--------------------------------------------------------------------------
-*/
-
-$ownerId = (int) $owner["id"];
-
-$name = (string) $owner["name"];
-
-$email = (string) $owner["email"];
-
-$profileImageUrl = $owner["profile_image_url"] ?? null;
-
-
-/*
-|--------------------------------------------------------------------------
-| JWT
-|--------------------------------------------------------------------------
-*/
-
-$issuedAt = time();
-
-$accessToken = JWT::encode(
-    [
-        "iss" => "sporto-api",
-
-        "iat" => $issuedAt,
-
-        "exp" => $issuedAt + 900,
-
-        "user_id" => $ownerId,
-
-        "name" => $name,
-
-        "email" => $email,
-
-        "role" => "owner",
-
-        "type" => "access"
-    ],
-    $secretKey,
-    "HS256"
-);
-
-
-/*
-|--------------------------------------------------------------------------
-| SAVE ACCESS TOKEN
-|--------------------------------------------------------------------------
-*/
-
-$updateStmt = $con->prepare(
-    "UPDATE ownerreg_tb
-     SET token = ?
-     WHERE id = ?"
-);
-
-
-if (!$updateStmt) {
-
-    sendResponse(
-        false,
-        "Failed to prepare token update",
-        [],
-        500
-    );
-}
-
-
-$updateStmt->bind_param(
-    "si",
-    $accessToken,
-    $ownerId
-);
-
-
-if (!$updateStmt->execute()) {
-
-    $error = $updateStmt->error;
-
+    $updateStmt = $con->prepare('UPDATE ownerreg_tb SET token = ? WHERE id = ?');
+    $updateStmt->bind_param('si', $accessToken, $ownerId);
+    $updateStmt->execute();
     $updateStmt->close();
 
-    sendResponse(
-        false,
-        "Failed to save token",
-        [
-            "error" => $error
-        ],
-        500
-    );
+    sendResponse(true, 'Owner login successful', [
+        'user_id' => $ownerId,
+        'name' => $name,
+        'email' => $email,
+        'role' => 'owner',
+        'profile_image_url' => $owner['profile_image_url'] ?? null,
+        'access_token' => $accessToken,
+    ]);
+} catch (Throwable $e) {
+    error_log('Owner login error: ' . $e->getMessage());
+    sendResponse(false, 'Login failed', [], 500);
 }
-
-
-$updateStmt->close();
-
-
-/*
-|--------------------------------------------------------------------------
-| SUCCESS
-|--------------------------------------------------------------------------
-*/
-
-sendResponse(
-    true,
-    "Owner login successful",
-    [
-        "user_id" => $ownerId,
-
-        "name" => $name,
-
-        "email" => $email,
-
-        "role" => "owner",
-
-        "profile_image_url" => $profileImageUrl,
-
-        "access_token" => $accessToken
-    ]
-);
-
-?>
