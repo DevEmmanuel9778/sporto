@@ -14,7 +14,9 @@ error_reporting(E_ALL);
 // ======================================================
 header("Content-Type: application/json; charset=UTF-8");
 header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS");
+header(
+    "Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS"
+);
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
 header("Access-Control-Max-Age: 86400");
 
@@ -26,10 +28,6 @@ if (($_SERVER["REQUEST_METHOD"] ?? "") === "OPTIONS") {
 
 // ======================================================
 // REQUIRED FILES
-// IMPORTANT:
-// Do NOT use config/jwt.php here.
-// Auth API creates JWT using Render JWT_SECRET.
-// This API must verify using the SAME JWT_SECRET.
 // ======================================================
 require_once __DIR__ . "/connection.php";
 require_once __DIR__ . "/vendor/autoload.php";
@@ -83,7 +81,7 @@ function getBearerToken(): ?string
 {
     $authorization = null;
 
-    // getallheaders() may differ in case depending on server
+    // getallheaders()
     if (function_exists("getallheaders")) {
         $headers = getallheaders();
 
@@ -95,9 +93,14 @@ function getBearerToken(): ?string
         }
     }
 
-    // Fallback for Apache / Render / PHP-FPM
+    // Apache / Render fallback
     if (!$authorization) {
         $authorization = $_SERVER["HTTP_AUTHORIZATION"] ?? null;
+    }
+
+    // Additional Apache fallback
+    if (!$authorization) {
+        $authorization = $_SERVER["REDIRECT_HTTP_AUTHORIZATION"] ?? null;
     }
 
     if (
@@ -152,7 +155,7 @@ function authenticate(array $allowedRoles = []): array
 
         $role = (string) ($payload["role"] ?? "");
 
-        // Check role permission
+        // Role permission
         if (
             $allowedRoles !== [] &&
             !in_array($role, $allowedRoles, true)
@@ -165,7 +168,7 @@ function authenticate(array $allowedRoles = []): array
             );
         }
 
-        // Make sure user ID exists
+        // User ID
         $userId = (int) (
             $payload["user_id"]
             ?? $payload["id"]
@@ -201,10 +204,7 @@ function inputData(): array
     $raw = file_get_contents("php://input");
 
     if ($raw !== false && trim($raw) !== "") {
-        $data = json_decode(
-            $raw,
-            true
-        );
+        $data = json_decode($raw, true);
 
         if (is_array($data)) {
             return $data;
@@ -212,6 +212,81 @@ function inputData(): array
     }
 
     return is_array($_POST) ? $_POST : [];
+}
+
+// ======================================================
+// TURF SELECT QUERY
+// IMPORTANT:
+// image = first/cover image from turf_images
+// ======================================================
+function turfSelectSql(): string
+{
+    return "
+        SELECT
+            turf_tb.turf_id,
+            turf_tb.owner_id,
+            turf_tb.turf_name,
+            turf_tb.location,
+            turf_tb.price,
+            turf_tb.status,
+
+            (
+                SELECT ti.image_url
+                FROM turf_images ti
+                WHERE ti.turf_id = turf_tb.turf_id
+                ORDER BY ti.is_cover DESC, ti.image_id ASC
+                LIMIT 1
+            ) AS image
+
+        FROM turf_tb
+    ";
+}
+
+// ======================================================
+// CONVERT DB ROW TO API TURF
+// ======================================================
+function turfRow(array $row): array
+{
+    $imageUrl = null;
+
+    if (
+        isset($row["image"]) &&
+        trim((string) $row["image"]) !== ""
+    ) {
+        $imageUrl = trim((string) $row["image"]);
+    }
+
+    return [
+        "turf_id" => (int) (
+            $row["turf_id"] ?? 0
+        ),
+
+        "owner_id" => (int) (
+            $row["owner_id"] ?? 0
+        ),
+
+        "turf_name" => (string) (
+            $row["turf_name"] ?? ""
+        ),
+
+        "location" => (string) (
+            $row["location"] ?? ""
+        ),
+
+        "price" => (float) (
+            $row["price"] ?? 0
+        ),
+
+        "status" => (string) (
+            $row["status"] ?? ""
+        ),
+
+        // Cover image
+        "image" => $imageUrl,
+
+        // Compatibility for Flutter/API clients
+        "image_url" => $imageUrl,
+    ];
 }
 
 // ======================================================
@@ -236,22 +311,17 @@ if ($method === "GET") {
         ? (int) $_GET["turf_id"]
         : 0;
 
+    $baseQuery = turfSelectSql();
+
     // --------------------------------------------------
     // SINGLE TURF
     // --------------------------------------------------
     if ($id > 0) {
 
         $stmt = $con->prepare(
-            "SELECT
-                turf_id,
-                owner_id,
-                turf_name,
-                location,
-                price,
-                status
-             FROM turf_tb
-             WHERE turf_id = ?
-             LIMIT 1"
+            $baseQuery . "
+            WHERE turf_tb.turf_id = ?
+            LIMIT 1"
         );
 
         if (!$stmt) {
@@ -274,16 +344,9 @@ if ($method === "GET") {
     } else {
 
         $stmt = $con->prepare(
-            "SELECT
-                turf_id,
-                owner_id,
-                turf_name,
-                location,
-                price,
-                status
-             FROM turf_tb
-             WHERE status != 'deleted'
-             ORDER BY turf_id DESC"
+            $baseQuery . "
+            WHERE turf_tb.status != 'deleted'
+            ORDER BY turf_tb.turf_id DESC"
         );
 
         if (!$stmt) {
@@ -296,6 +359,9 @@ if ($method === "GET") {
         }
     }
 
+    // --------------------------------------------------
+    // EXECUTE
+    // --------------------------------------------------
     if (!$stmt->execute()) {
 
         $error = $stmt->error;
@@ -314,35 +380,44 @@ if ($method === "GET") {
 
     $result = $stmt->get_result();
 
+    // --------------------------------------------------
+    // SINGLE TURF
+    // --------------------------------------------------
+    if ($id > 0) {
+
+        $row = $result->fetch_assoc();
+
+        $stmt->close();
+
+        if (!$row) {
+            response(
+                false,
+                "Turf not found",
+                [],
+                404
+            );
+        }
+
+        $turf = turfRow($row);
+
+        response(
+            true,
+            "Turf fetched successfully",
+            [
+                "turf" => $turf,
+                // Also provide a data wrapper for compatibility
+                "data" => $turf,
+            ]
+        );
+    }
+
+    // --------------------------------------------------
+    // ALL TURFS
+    // --------------------------------------------------
     $turfs = [];
 
     while ($row = $result->fetch_assoc()) {
-
-        $turfs[] = [
-            "turf_id" => (int) (
-                $row["turf_id"] ?? 0
-            ),
-
-            "owner_id" => (int) (
-                $row["owner_id"] ?? 0
-            ),
-
-            "turf_name" => (string) (
-                $row["turf_name"] ?? ""
-            ),
-
-            "location" => (string) (
-                $row["location"] ?? ""
-            ),
-
-            "price" => (float) (
-                $row["price"] ?? 0
-            ),
-
-            "status" => (string) (
-                $row["status"] ?? ""
-            ),
-        ];
+        $turfs[] = turfRow($row);
     }
 
     $stmt->close();
@@ -397,7 +472,7 @@ if ($method === "POST") {
         $data["price"] ?? 0
     );
 
-    // Owner gets owner ID directly from JWT
+    // Owner gets owner ID from JWT
     // Admin must provide owner_id
     $ownerId = $role === "owner"
         ? $userId
@@ -794,7 +869,6 @@ if (
 
     // mysqli bind_param requires references
     $bindReferences = [];
-
     $bindReferences[] = $types;
 
     foreach ($values as $key => $value) {
@@ -1012,6 +1086,8 @@ if ($method === "DELETE") {
 
     // --------------------------------------------------
     // HARD DELETE IF NO BOOKINGS
+    // turf_images will also be deleted because of
+    // ON DELETE CASCADE on turf_id
     // --------------------------------------------------
     $stmt = $con->prepare(
         "DELETE FROM turf_tb
