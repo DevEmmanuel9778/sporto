@@ -1,7 +1,5 @@
 <?php
 
-declare(strict_types=1);
-
 // ======================================================
 // ERROR HANDLING
 // ======================================================
@@ -9,10 +7,7 @@ ini_set("display_errors", "0");
 ini_set("log_errors", "1");
 error_reporting(E_ALL);
 
-// Prevent mysqli from throwing uncaught SQL exceptions.
-// All database errors will be returned as JSON.
 mysqli_report(MYSQLI_REPORT_OFF);
-
 // ======================================================
 // HEADERS / CORS
 // ======================================================
@@ -99,7 +94,8 @@ function getBearerToken(): ?string
 
     // Apache / Render fallback
     if (!$authorization) {
-        $authorization = $_SERVER["HTTP_AUTHORIZATION"] ?? null;
+        $authorization =
+            $_SERVER["HTTP_AUTHORIZATION"] ?? null;
     }
 
     // Additional Apache fallback
@@ -464,12 +460,22 @@ if ($method === "GET") {
                 );
             }
 
+            $singleTurf = $turfs[0];
+
             response(
                 true,
                 "Turf fetched successfully",
                 [
-                    "turf" => $turfs[0],
-                    "data" => $turfs[0],
+                    // Single object
+                    "turf" => $singleTurf,
+
+                    // Compatibility
+                    "data" => $singleTurf,
+
+                    // Compatibility with list-based Flutter parser
+                    "turfs" => [
+                        $singleTurf,
+                    ],
                 ]
             );
         }
@@ -1240,3 +1246,4 @@ response(
 );
 
 ?>
+
