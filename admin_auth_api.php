@@ -15,15 +15,15 @@ mysqli_report(MYSQLI_REPORT_OFF);
 // ======================================================
 header("Content-Type: application/json; charset=UTF-8");
 header("Access-Control-Allow-Origin: *");
-header(
-    "Access-Control-Allow-Methods: POST, OPTIONS"
-);
+header("Access-Control-Allow-Methods: POST, OPTIONS");
 header(
     "Access-Control-Allow-Headers: Content-Type, Authorization"
 );
 header("Access-Control-Max-Age: 86400");
 
-// Preflight
+// ======================================================
+// OPTIONS / PREFLIGHT
+// ======================================================
 if (
     ($_SERVER["REQUEST_METHOD"] ?? "") === "OPTIONS"
 ) {
@@ -66,7 +66,7 @@ function sendResponse(
 }
 
 // ======================================================
-// ONLY POST
+// REQUEST METHOD
 // ======================================================
 $method = strtoupper(
     $_SERVER["REQUEST_METHOD"] ?? ""
@@ -82,31 +82,34 @@ if ($method !== "POST") {
 }
 
 // ======================================================
-// READ JSON REQUEST
+// READ JSON BODY
 // ======================================================
-$input = file_get_contents("php://input");
-
-$data = [];
+$rawInput = file_get_contents("php://input");
 
 if (
-    $input !== false &&
-    trim($input) !== ""
+    $rawInput === false ||
+    trim($rawInput) === ""
 ) {
-    $decoded = json_decode(
-        $input,
-        true
+    sendResponse(
+        false,
+        "Request body is required",
+        [],
+        400
     );
+}
 
-    if (!is_array($decoded)) {
-        sendResponse(
-            false,
-            "Invalid JSON request",
-            [],
-            400
-        );
-    }
+$data = json_decode(
+    $rawInput,
+    true
+);
 
-    $data = $decoded;
+if (!is_array($data)) {
+    sendResponse(
+        false,
+        "Invalid JSON request",
+        [],
+        400
+    );
 }
 
 // ======================================================
@@ -130,6 +133,75 @@ if ($action !== "login") {
 }
 
 // ======================================================
+// PERMANENT ADMIN CREDENTIALS
+// ======================================================
+//
+// ONLY these credentials can access Admin.
+//
+// Username:
+// sporto_root_admin
+//
+// Password:
+// Spt0!Adm#92_Kx@7Qm
+//
+// No admin registration is supported.
+// ======================================================
+$permanentUsername = "sporto_root_admin";
+$permanentPassword = "Spt0!Adm#92_Kx@7Qm";
+
+// ======================================================
+// LOGIN INPUT
+// ======================================================
+$loginUsername = trim(
+    (string) (
+        $data["username"]
+        ?? $data["email"]
+        ?? ""
+    )
+);
+
+$loginPassword = (string) (
+    $data["password"] ?? ""
+);
+
+if (
+    $loginUsername === "" ||
+    $loginPassword === ""
+) {
+    sendResponse(
+        false,
+        "Username and password are required",
+        [],
+        400
+    );
+}
+
+// ======================================================
+// CHECK PERMANENT CREDENTIALS
+// ======================================================
+$usernameValid = hash_equals(
+    $permanentUsername,
+    $loginUsername
+);
+
+$passwordValid = hash_equals(
+    $permanentPassword,
+    $loginPassword
+);
+
+if (
+    !$usernameValid ||
+    !$passwordValid
+) {
+    sendResponse(
+        false,
+        "Invalid username or password",
+        [],
+        401
+    );
+}
+
+// ======================================================
 // JWT SECRET
 // ======================================================
 $secretKey = getenv("JWT_SECRET");
@@ -147,92 +219,24 @@ if (
 }
 
 // ======================================================
-// PERMANENT ADMIN CREDENTIALS
-// ======================================================
-//
-// These are the only credentials allowed.
-//
-// Username:
-// sporto_root_admin
-//
-// Password:
-// Spt0!Adm#92_Kx@7Qm
-//
-// For production security, these can later be moved
-// to Render Environment Variables without changing
-// the Flutter login flow.
-// ======================================================
-
-$permanentUsername = "sporto_root_admin";
-$permanentPassword = "Spt0!Adm#92_Kx@7Qm";
-
-// ======================================================
-// LOGIN DATA
-// ======================================================
-$adminUsername = trim(
-    (string) (
-        $data["username"]
-        ?? $data["email"]
-        ?? ""
-    )
-);
-
-$loginPassword = (string) (
-    $data["password"] ?? ""
-);
-
-if (
-    $adminUsername === "" ||
-    $loginPassword === ""
-) {
-    sendResponse(
-        false,
-        "Username and password are required",
-        [],
-        400
-    );
-}
-
-// ======================================================
-// PERMANENT CREDENTIAL CHECK
-// ======================================================
-if (
-    !hash_equals(
-        $permanentUsername,
-        $adminUsername
-    ) ||
-    !hash_equals(
-        $permanentPassword,
-        $loginPassword
-    )
-) {
-    sendResponse(
-        false,
-        "Invalid username or password",
-        [],
-        401
-    );
-}
-
-// ======================================================
 // DATABASE ENVIRONMENT
 // ======================================================
-$host = getenv("DB_HOST");
-$port = (int) (
+$dbHost = getenv("DB_HOST");
+$dbPort = (int) (
     getenv("DB_PORT") ?: 0
 );
-$dbname = getenv("DB_NAME");
-$dbUsername = getenv("DB_USER");
+$dbName = getenv("DB_NAME");
+$dbUser = getenv("DB_USER");
 $dbPassword = getenv("DB_PASSWORD");
 
 if (
-    $host === false ||
-    trim($host) === "" ||
-    $port <= 0 ||
-    $dbname === false ||
-    trim($dbname) === "" ||
-    $dbUsername === false ||
-    trim($dbUsername) === "" ||
+    $dbHost === false ||
+    trim($dbHost) === "" ||
+    $dbPort <= 0 ||
+    $dbName === false ||
+    trim($dbName) === "" ||
+    $dbUser === false ||
+    trim($dbUser) === "" ||
     $dbPassword === false
 ) {
     sendResponse(
@@ -244,7 +248,7 @@ if (
 }
 
 // ======================================================
-// AIVEN SSL DATABASE CONNECTION
+// AIVEN SSL CONNECTION
 // ======================================================
 try {
     $con = mysqli_init();
@@ -266,11 +270,11 @@ try {
 
     $connected = mysqli_real_connect(
         $con,
-        $host,
-        $dbUsername,
+        $dbHost,
+        $dbUser,
         $dbPassword,
-        $dbname,
-        $port,
+        $dbName,
+        $dbPort,
         null,
         MYSQLI_CLIENT_SSL
     );
@@ -296,14 +300,12 @@ try {
 $con->set_charset("utf8mb4");
 
 // ======================================================
-// FIND ADMIN RECORD
+// FIND THE SINGLE ADMIN RECORD
 // ======================================================
 //
-// We still use adminreg_tb to get the actual admin ID
-// and to save the issued JWT token.
-//
-// The password in this table is NOT used for login.
-// The permanent credentials above control login.
+// Login credentials are NOT read from password column.
+// Username is used to locate the admin row so we can get
+// the admin ID and save the JWT token.
 // ======================================================
 $stmt = $con->prepare(
     "SELECT
@@ -315,9 +317,11 @@ $stmt = $con->prepare(
 );
 
 if (!$stmt) {
+    $con->close();
+
     sendResponse(
         false,
-        "Database query failed",
+        "Failed to prepare admin query",
         [
             "error" => $con->error,
         ],
@@ -334,6 +338,7 @@ if (!$stmt->execute()) {
     $error = $stmt->error;
 
     $stmt->close();
+    $con->close();
 
     sendResponse(
         false,
@@ -351,6 +356,7 @@ if ($result === false) {
     $error = $stmt->error;
 
     $stmt->close();
+    $con->close();
 
     sendResponse(
         false,
@@ -363,14 +369,15 @@ if ($result === false) {
 }
 
 // ======================================================
-// ADMIN RECORD MISSING
+// ADMIN RECORD MUST EXIST
 // ======================================================
 if ($result->num_rows === 0) {
     $stmt->close();
+    $con->close();
 
     sendResponse(
         false,
-        "Permanent admin account is not configured in adminreg_tb",
+        "Admin account is not configured in adminreg_tb",
         [],
         500
     );
@@ -388,6 +395,8 @@ $adminId = (int) (
 );
 
 if ($adminId <= 0) {
+    $con->close();
+
     sendResponse(
         false,
         "Invalid admin account ID",
@@ -401,13 +410,21 @@ $adminName = $permanentUsername;
 // ======================================================
 // CREATE JWT
 // ======================================================
+//
+// 30-day access token so reopening the app does not force
+// the admin to login again every 15 minutes.
+//
+// Logout on Flutter clears the local token.
+// ======================================================
 $issuedAt = time();
+
+$expiresAt = $issuedAt + (30 * 24 * 60 * 60);
 
 $accessToken = JWT::encode(
     [
         "iss" => "sporto-api",
         "iat" => $issuedAt,
-        "exp" => $issuedAt + 900,
+        "exp" => $expiresAt,
 
         "user_id" => $adminId,
         "name" => $adminName,
@@ -424,12 +441,13 @@ $accessToken = JWT::encode(
 // ======================================================
 $updateStmt = $con->prepare(
     "UPDATE adminreg_tb
-     SET token = ?,
-         username = ?
+     SET token = ?
      WHERE id = ?"
 );
 
 if (!$updateStmt) {
+    $con->close();
+
     sendResponse(
         false,
         "Failed to prepare token update",
@@ -441,9 +459,8 @@ if (!$updateStmt) {
 }
 
 $updateStmt->bind_param(
-    "ssi",
+    "si",
     $accessToken,
-    $adminName,
     $adminId
 );
 
@@ -451,6 +468,7 @@ if (!$updateStmt->execute()) {
     $error = $updateStmt->error;
 
     $updateStmt->close();
+    $con->close();
 
     sendResponse(
         false,
@@ -463,9 +481,10 @@ if (!$updateStmt->execute()) {
 }
 
 $updateStmt->close();
+$con->close();
 
 // ======================================================
-// SUCCESS
+// SUCCESS RESPONSE
 // ======================================================
 sendResponse(
     true,
@@ -476,7 +495,7 @@ sendResponse(
         "email" => $adminName,
         "role" => "admin",
         "access_token" => $accessToken,
-        "expires_in" => 900,
+        "expires_in" => $expiresAt - $issuedAt,
     ],
     200
 );
