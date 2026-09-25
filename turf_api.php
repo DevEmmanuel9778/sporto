@@ -1,28 +1,61 @@
 <?php
 
+declare(strict_types=1);
+
+// ======================================================
+// ERROR HANDLING
+// ======================================================
 ini_set("display_errors", "0");
 ini_set("log_errors", "1");
 error_reporting(E_ALL);
 
+// ======================================================
+// HEADERS / CORS
+// ======================================================
 header("Content-Type: application/json; charset=UTF-8");
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
 header("Access-Control-Max-Age: 86400");
 
+// Browser preflight
 if (($_SERVER["REQUEST_METHOD"] ?? "") === "OPTIONS") {
     http_response_code(204);
     exit;
 }
 
+// ======================================================
+// REQUIRED FILES
+// IMPORTANT:
+// Do NOT use config/jwt.php here.
+// Auth API creates JWT using Render JWT_SECRET.
+// This API must verify using the SAME JWT_SECRET.
+// ======================================================
 require_once __DIR__ . "/connection.php";
-require_once __DIR__ . "/config/jwt.php";
+require_once __DIR__ . "/vendor/autoload.php";
 
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
-// =========================
+
+// ======================================================
+// JWT SECRET
+// ======================================================
+$secretKey = getenv("JWT_SECRET");
+
+if ($secretKey === false || trim($secretKey) === "") {
+    http_response_code(500);
+
+    echo json_encode([
+        "status" => false,
+        "message" => "JWT_SECRET environment variable is missing",
+    ]);
+
+    exit;
+}
+
+// ======================================================
 // RESPONSE HELPER
-// =========================
+// ======================================================
 function response(
     bool $status,
     string $message,
@@ -37,37 +70,43 @@ function response(
             "message" => $message,
             ...$data,
         ],
-        JSON_UNESCAPED_UNICODE
+        JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
     );
 
     exit;
 }
 
-// =========================
+// ======================================================
 // GET BEARER TOKEN
-// =========================
+// ======================================================
 function getBearerToken(): ?string
 {
     $authorization = null;
 
+    // getallheaders() may differ in case depending on server
     if (function_exists("getallheaders")) {
         $headers = getallheaders();
 
         foreach ($headers as $key => $value) {
-            if (strtolower($key) === "authorization") {
-                $authorization = $value;
+            if (strtolower((string) $key) === "authorization") {
+                $authorization = (string) $value;
                 break;
             }
         }
     }
 
+    // Fallback for Apache / Render / PHP-FPM
     if (!$authorization) {
         $authorization = $_SERVER["HTTP_AUTHORIZATION"] ?? null;
     }
 
     if (
         !$authorization ||
-        !preg_match("/Bearer\s+(.+)/i", $authorization, $matches)
+        !preg_match(
+            "/^Bearer\s+(.+)$/i",
+            trim($authorization),
+            $matches
+        )
     ) {
         return null;
     }
@@ -75,12 +114,12 @@ function getBearerToken(): ?string
     return trim($matches[1]);
 }
 
-// =========================
+// ======================================================
 // AUTHENTICATION
-// =========================
+// ======================================================
 function authenticate(array $allowedRoles = []): array
 {
-    global $secret_key;
+    global $secretKey;
 
     $token = getBearerToken();
 
@@ -96,11 +135,12 @@ function authenticate(array $allowedRoles = []): array
     try {
         $decoded = JWT::decode(
             $token,
-            new Key($secret_key, "HS256")
+            new Key($secretKey, "HS256")
         );
 
         $payload = (array) $decoded;
 
+        // Only access tokens are allowed
         if (($payload["type"] ?? "") !== "access") {
             response(
                 false,
@@ -112,6 +152,7 @@ function authenticate(array $allowedRoles = []): array
 
         $role = (string) ($payload["role"] ?? "");
 
+        // Check role permission
         if (
             $allowedRoles !== [] &&
             !in_array($role, $allowedRoles, true)
@@ -121,6 +162,22 @@ function authenticate(array $allowedRoles = []): array
                 "You do not have permission for this action",
                 [],
                 403
+            );
+        }
+
+        // Make sure user ID exists
+        $userId = (int) (
+            $payload["user_id"]
+            ?? $payload["id"]
+            ?? 0
+        );
+
+        if ($userId <= 0) {
+            response(
+                false,
+                "Invalid token user ID",
+                [],
+                401
             );
         }
 
@@ -136,15 +193,18 @@ function authenticate(array $allowedRoles = []): array
     }
 }
 
-// =========================
+// ======================================================
 // INPUT DATA
-// =========================
+// ======================================================
 function inputData(): array
 {
     $raw = file_get_contents("php://input");
 
     if ($raw !== false && trim($raw) !== "") {
-        $data = json_decode($raw, true);
+        $data = json_decode(
+            $raw,
+            true
+        );
 
         if (is_array($data)) {
             return $data;
@@ -154,25 +214,33 @@ function inputData(): array
     return is_array($_POST) ? $_POST : [];
 }
 
-// =========================
+// ======================================================
 // REQUEST METHOD
-// =========================
-$method = strtoupper($_SERVER["REQUEST_METHOD"] ?? "GET");
+// ======================================================
+$method = strtoupper(
+    $_SERVER["REQUEST_METHOD"] ?? "GET"
+);
 
-// =========================
+// ======================================================
 // GET TURFS
-// =========================
+// ======================================================
 if ($method === "GET") {
-    authenticate(["user", "owner", "admin"]);
+
+    authenticate([
+        "user",
+        "owner",
+        "admin",
+    ]);
 
     $id = isset($_GET["turf_id"])
         ? (int) $_GET["turf_id"]
         : 0;
 
-    // -------------------------
-    // Single turf
-    // -------------------------
+    // --------------------------------------------------
+    // SINGLE TURF
+    // --------------------------------------------------
     if ($id > 0) {
+
         $stmt = $con->prepare(
             "SELECT
                 turf_id,
@@ -195,12 +263,16 @@ if ($method === "GET") {
             );
         }
 
-        $stmt->bind_param("i", $id);
+        $stmt->bind_param(
+            "i",
+            $id
+        );
 
-    // -------------------------
-    // All turfs
-    // -------------------------
+    // --------------------------------------------------
+    // ALL TURFS
+    // --------------------------------------------------
     } else {
+
         $stmt = $con->prepare(
             "SELECT
                 turf_id,
@@ -225,12 +297,17 @@ if ($method === "GET") {
     }
 
     if (!$stmt->execute()) {
+
+        $error = $stmt->error;
+
         $stmt->close();
 
         response(
             false,
             "Failed to fetch turfs",
-            [],
+            [
+                "error" => $error,
+            ],
             500
         );
     }
@@ -240,13 +317,31 @@ if ($method === "GET") {
     $turfs = [];
 
     while ($row = $result->fetch_assoc()) {
+
         $turfs[] = [
-            "turf_id" => (int) ($row["turf_id"] ?? 0),
-            "owner_id" => (int) ($row["owner_id"] ?? 0),
-            "turf_name" => (string) ($row["turf_name"] ?? ""),
-            "location" => (string) ($row["location"] ?? ""),
-            "price" => (float) ($row["price"] ?? 0),
-            "status" => (string) ($row["status"] ?? ""),
+            "turf_id" => (int) (
+                $row["turf_id"] ?? 0
+            ),
+
+            "owner_id" => (int) (
+                $row["owner_id"] ?? 0
+            ),
+
+            "turf_name" => (string) (
+                $row["turf_name"] ?? ""
+            ),
+
+            "location" => (string) (
+                $row["location"] ?? ""
+            ),
+
+            "price" => (float) (
+                $row["price"] ?? 0
+            ),
+
+            "status" => (string) (
+                $row["status"] ?? ""
+            ),
         ];
     }
 
@@ -261,12 +356,17 @@ if ($method === "GET") {
     );
 }
 
-// =========================
+// ======================================================
 // AUTH FOR WRITE ACTIONS
-// =========================
-$user = authenticate(["owner", "admin"]);
+// ======================================================
+$user = authenticate([
+    "owner",
+    "admin",
+]);
 
-$role = (string) ($user["role"] ?? "");
+$role = (string) (
+    $user["role"] ?? ""
+);
 
 $userId = (int) (
     $user["user_id"]
@@ -276,34 +376,44 @@ $userId = (int) (
 
 $data = inputData();
 
-// =========================
+// ======================================================
 // POST - ADD TURF
-// =========================
+// ======================================================
 if ($method === "POST") {
 
     $turfName = trim(
-        (string) ($data["turf_name"] ?? "")
+        (string) (
+            $data["turf_name"] ?? ""
+        )
     );
 
     $location = trim(
-        (string) ($data["location"] ?? "")
+        (string) (
+            $data["location"] ?? ""
+        )
     );
 
     $price = (float) (
         $data["price"] ?? 0
     );
 
+    // Owner gets owner ID directly from JWT
+    // Admin must provide owner_id
     $ownerId = $role === "owner"
         ? $userId
-        : (int) ($data["owner_id"] ?? 0);
+        : (int) (
+            $data["owner_id"] ?? 0
+        );
 
     $status = trim(
-        (string) ($data["status"] ?? "active")
+        (string) (
+            $data["status"] ?? "active"
+        )
     );
 
-    // -------------------------
-    // Validation
-    // -------------------------
+    // --------------------------------------------------
+    // VALIDATION
+    // --------------------------------------------------
     if ($turfName === "") {
         response(
             false,
@@ -346,13 +456,19 @@ if ($method === "POST") {
         "deleted",
     ];
 
-    if (!in_array($status, $allowedStatuses, true)) {
+    if (
+        !in_array(
+            $status,
+            $allowedStatuses,
+            true
+        )
+    ) {
         $status = "active";
     }
 
-    // -------------------------
-    // Insert
-    // -------------------------
+    // --------------------------------------------------
+    // INSERT
+    // --------------------------------------------------
     $stmt = $con->prepare(
         "INSERT INTO turf_tb
         (
@@ -384,13 +500,17 @@ if ($method === "POST") {
     );
 
     if (!$stmt->execute()) {
+
         $error = $stmt->error;
+
         $stmt->close();
 
         response(
             false,
-            "Failed to add turf: " . $error,
-            [],
+            "Failed to add turf",
+            [
+                "error" => $error,
+            ],
             500
         );
     }
@@ -409,10 +529,13 @@ if ($method === "POST") {
     );
 }
 
-// =========================
+// ======================================================
 // PUT / PATCH - UPDATE TURF
-// =========================
-if ($method === "PUT" || $method === "PATCH") {
+// ======================================================
+if (
+    $method === "PUT" ||
+    $method === "PATCH"
+) {
 
     $turfId = (int) (
         $data["turf_id"] ?? 0
@@ -427,9 +550,9 @@ if ($method === "PUT" || $method === "PATCH") {
         );
     }
 
-    // -------------------------
-    // Owner ownership check
-    // -------------------------
+    // --------------------------------------------------
+    // OWNER OWNERSHIP CHECK
+    // --------------------------------------------------
     if ($role === "owner") {
 
         $check = $con->prepare(
@@ -456,12 +579,17 @@ if ($method === "PUT" || $method === "PATCH") {
         );
 
         if (!$check->execute()) {
+
+            $error = $check->error;
+
             $check->close();
 
             response(
                 false,
                 "Failed to verify turf ownership",
-                [],
+                [
+                    "error" => $error,
+                ],
                 500
             );
         }
@@ -469,6 +597,7 @@ if ($method === "PUT" || $method === "PATCH") {
         $result = $check->get_result();
 
         if ($result->num_rows === 0) {
+
             $check->close();
 
             response(
@@ -482,14 +611,21 @@ if ($method === "PUT" || $method === "PATCH") {
         $check->close();
     }
 
-    // -------------------------
-    // Build update query
-    // -------------------------
+    // --------------------------------------------------
+    // BUILD UPDATE QUERY
+    // --------------------------------------------------
     $fields = [];
     $types = "";
     $values = [];
 
-    if (array_key_exists("turf_name", $data)) {
+    // Turf name
+    if (
+        array_key_exists(
+            "turf_name",
+            $data
+        )
+    ) {
+
         $name = trim(
             (string) $data["turf_name"]
         );
@@ -508,7 +644,14 @@ if ($method === "PUT" || $method === "PATCH") {
         $values[] = $name;
     }
 
-    if (array_key_exists("location", $data)) {
+    // Location
+    if (
+        array_key_exists(
+            "location",
+            $data
+        )
+    ) {
+
         $locationValue = trim(
             (string) $data["location"]
         );
@@ -527,8 +670,17 @@ if ($method === "PUT" || $method === "PATCH") {
         $values[] = $locationValue;
     }
 
-    if (array_key_exists("price", $data)) {
-        $priceValue = (float) $data["price"];
+    // Price
+    if (
+        array_key_exists(
+            "price",
+            $data
+        )
+    ) {
+
+        $priceValue = (float) (
+            $data["price"]
+        );
 
         if ($priceValue <= 0) {
             response(
@@ -544,7 +696,14 @@ if ($method === "PUT" || $method === "PATCH") {
         $values[] = $priceValue;
     }
 
-    if (array_key_exists("status", $data)) {
+    // Status
+    if (
+        array_key_exists(
+            "status",
+            $data
+        )
+    ) {
+
         $statusValue = trim(
             (string) $data["status"]
         );
@@ -555,7 +714,13 @@ if ($method === "PUT" || $method === "PATCH") {
             "deleted",
         ];
 
-        if (!in_array($statusValue, $allowedStatuses, true)) {
+        if (
+            !in_array(
+                $statusValue,
+                $allowedStatuses,
+                true
+            )
+        ) {
             response(
                 false,
                 "Invalid turf status",
@@ -569,11 +734,18 @@ if ($method === "PUT" || $method === "PATCH") {
         $values[] = $statusValue;
     }
 
+    // Admin can change owner
     if (
         $role === "admin" &&
-        array_key_exists("owner_id", $data)
+        array_key_exists(
+            "owner_id",
+            $data
+        )
     ) {
-        $ownerValue = (int) $data["owner_id"];
+
+        $ownerValue = (int) (
+            $data["owner_id"]
+        );
 
         if ($ownerValue <= 0) {
             response(
@@ -598,6 +770,9 @@ if ($method === "PUT" || $method === "PATCH") {
         );
     }
 
+    // --------------------------------------------------
+    // SQL
+    // --------------------------------------------------
     $sql =
         "UPDATE turf_tb SET "
         . implode(", ", $fields)
@@ -617,28 +792,22 @@ if ($method === "PUT" || $method === "PATCH") {
         );
     }
 
-    // mysqli bind_param needs references.
-    $bindValues = [];
+    // mysqli bind_param requires references
+    $bindReferences = [];
+
+    $bindReferences[] = $types;
 
     foreach ($values as $key => $value) {
-        $bindValues[$key] = $value;
+        $bindReferences[] = &$values[$key];
     }
 
-    $references = [];
+    if (
+        !call_user_func_array(
+            [$stmt, "bind_param"],
+            $bindReferences
+        )
+    ) {
 
-    foreach ($bindValues as $key => &$value) {
-        $references[$key] = &$value;
-    }
-
-    array_unshift(
-        $references,
-        $types
-    );
-
-    if (!call_user_func_array(
-        [$stmt, "bind_param"],
-        $references
-    )) {
         $stmt->close();
 
         response(
@@ -650,13 +819,17 @@ if ($method === "PUT" || $method === "PATCH") {
     }
 
     if (!$stmt->execute()) {
+
         $error = $stmt->error;
+
         $stmt->close();
 
         response(
             false,
-            "Failed to update turf: " . $error,
-            [],
+            "Failed to update turf",
+            [
+                "error" => $error,
+            ],
             500
         );
     }
@@ -669,9 +842,9 @@ if ($method === "PUT" || $method === "PATCH") {
     );
 }
 
-// =========================
+// ======================================================
 // DELETE TURF
-// =========================
+// ======================================================
 if ($method === "DELETE") {
 
     $turfId = (int) (
@@ -689,9 +862,9 @@ if ($method === "DELETE") {
         );
     }
 
-    // -------------------------
-    // Owner ownership check
-    // -------------------------
+    // --------------------------------------------------
+    // OWNER OWNERSHIP CHECK
+    // --------------------------------------------------
     if ($role === "owner") {
 
         $check = $con->prepare(
@@ -718,6 +891,7 @@ if ($method === "DELETE") {
         );
 
         if (!$check->execute()) {
+
             $check->close();
 
             response(
@@ -731,6 +905,7 @@ if ($method === "DELETE") {
         $result = $check->get_result();
 
         if ($result->num_rows === 0) {
+
             $check->close();
 
             response(
@@ -744,9 +919,9 @@ if ($method === "DELETE") {
         $check->close();
     }
 
-    // -------------------------
-    // Check booking history
-    // -------------------------
+    // --------------------------------------------------
+    // CHECK BOOKING HISTORY
+    // --------------------------------------------------
     $bookingCheck = $con->prepare(
         "SELECT COUNT(*) AS total
          FROM bookings
@@ -768,6 +943,7 @@ if ($method === "DELETE") {
     );
 
     if (!$bookingCheck->execute()) {
+
         $bookingCheck->close();
 
         response(
@@ -789,9 +965,9 @@ if ($method === "DELETE") {
 
     $bookingCheck->close();
 
-    // -------------------------
-    // Soft delete
-    // -------------------------
+    // --------------------------------------------------
+    // SOFT DELETE IF BOOKINGS EXIST
+    // --------------------------------------------------
     if ($bookingCount > 0) {
 
         $stmt = $con->prepare(
@@ -815,6 +991,7 @@ if ($method === "DELETE") {
         );
 
         if (!$stmt->execute()) {
+
             $stmt->close();
 
             response(
@@ -833,9 +1010,9 @@ if ($method === "DELETE") {
         );
     }
 
-    // -------------------------
-    // Hard delete
-    // -------------------------
+    // --------------------------------------------------
+    // HARD DELETE IF NO BOOKINGS
+    // --------------------------------------------------
     $stmt = $con->prepare(
         "DELETE FROM turf_tb
          WHERE turf_id = ?"
@@ -856,13 +1033,17 @@ if ($method === "DELETE") {
     );
 
     if (!$stmt->execute()) {
+
         $error = $stmt->error;
+
         $stmt->close();
 
         response(
             false,
-            "Failed to delete turf: " . $error,
-            [],
+            "Failed to delete turf",
+            [
+                "error" => $error,
+            ],
             500
         );
     }
@@ -875,9 +1056,9 @@ if ($method === "DELETE") {
     );
 }
 
-// =========================
+// ======================================================
 // UNSUPPORTED METHOD
-// =========================
+// ======================================================
 response(
     false,
     "Unsupported request method",
