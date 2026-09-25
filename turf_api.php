@@ -9,6 +9,10 @@ ini_set("display_errors", "0");
 ini_set("log_errors", "1");
 error_reporting(E_ALL);
 
+// Prevent mysqli from throwing uncaught SQL exceptions.
+// All database errors will be returned as JSON.
+mysqli_report(MYSQLI_REPORT_OFF);
+
 // ======================================================
 // HEADERS / CORS
 // ======================================================
@@ -41,14 +45,12 @@ use Firebase\JWT\Key;
 $secretKey = getenv("JWT_SECRET");
 
 if ($secretKey === false || trim($secretKey) === "") {
-    http_response_code(500);
-
-    echo json_encode([
-        "status" => false,
-        "message" => "JWT_SECRET environment variable is missing",
-    ]);
-
-    exit;
+    response(
+        false,
+        "JWT_SECRET environment variable is missing",
+        [],
+        500
+    );
 }
 
 // ======================================================
@@ -68,7 +70,9 @@ function response(
             "message" => $message,
             ...$data,
         ],
-        JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+        JSON_UNESCAPED_UNICODE
+        | JSON_UNESCAPED_SLASHES
+        | JSON_INVALID_UTF8_SUBSTITUTE
     );
 
     exit;
@@ -100,7 +104,8 @@ function getBearerToken(): ?string
 
     // Additional Apache fallback
     if (!$authorization) {
-        $authorization = $_SERVER["REDIRECT_HTTP_AUTHORIZATION"] ?? null;
+        $authorization =
+            $_SERVER["REDIRECT_HTTP_AUTHORIZATION"] ?? null;
     }
 
     if (
@@ -153,12 +158,18 @@ function authenticate(array $allowedRoles = []): array
             );
         }
 
-        $role = (string) ($payload["role"] ?? "");
+        $role = (string) (
+            $payload["role"] ?? ""
+        );
 
-        // Role permission
+        // Check role permission
         if (
             $allowedRoles !== [] &&
-            !in_array($role, $allowedRoles, true)
+            !in_array(
+                $role,
+                $allowedRoles,
+                true
+            )
         ) {
             response(
                 false,
@@ -168,7 +179,7 @@ function authenticate(array $allowedRoles = []): array
             );
         }
 
-        // User ID
+        // Get user ID from JWT
         $userId = (int) (
             $payload["user_id"]
             ?? $payload["id"]
@@ -203,57 +214,40 @@ function inputData(): array
 {
     $raw = file_get_contents("php://input");
 
-    if ($raw !== false && trim($raw) !== "") {
-        $data = json_decode($raw, true);
+    if (
+        $raw !== false &&
+        trim($raw) !== ""
+    ) {
+        $data = json_decode(
+            $raw,
+            true
+        );
 
         if (is_array($data)) {
             return $data;
         }
     }
 
-    return is_array($_POST) ? $_POST : [];
+    return is_array($_POST)
+        ? $_POST
+        : [];
 }
 
 // ======================================================
-// TURF SELECT QUERY
-// IMPORTANT:
-// image = first/cover image from turf_images
+// CONVERT TURF ROW TO API FORMAT
 // ======================================================
-function turfSelectSql(): string
-{
-    return "
-        SELECT
-            turf_tb.turf_id,
-            turf_tb.owner_id,
-            turf_tb.turf_name,
-            turf_tb.location,
-            turf_tb.price,
-            turf_tb.status,
-
-            (
-                SELECT ti.image_url
-                FROM turf_images ti
-                WHERE ti.turf_id = turf_tb.turf_id
-                ORDER BY ti.is_cover DESC, ti.image_id ASC
-                LIMIT 1
-            ) AS image
-
-        FROM turf_tb
-    ";
-}
-
-// ======================================================
-// CONVERT DB ROW TO API TURF
-// ======================================================
-function turfRow(array $row): array
-{
+function turfRow(
+    array $row
+): array {
     $imageUrl = null;
 
     if (
         isset($row["image"]) &&
         trim((string) $row["image"]) !== ""
     ) {
-        $imageUrl = trim((string) $row["image"]);
+        $imageUrl = trim(
+            (string) $row["image"]
+        );
     }
 
     return [
@@ -281,10 +275,10 @@ function turfRow(array $row): array
             $row["status"] ?? ""
         ),
 
-        // Cover image
+        // Cover image from turf_images
         "image" => $imageUrl,
 
-        // Compatibility for Flutter/API clients
+        // Compatibility field
         "image_url" => $imageUrl,
     ];
 }
@@ -301,6 +295,7 @@ $method = strtoupper(
 // ======================================================
 if ($method === "GET") {
 
+    // User / Owner / Admin can read turfs
     authenticate([
         "user",
         "owner",
@@ -311,124 +306,200 @@ if ($method === "GET") {
         ? (int) $_GET["turf_id"]
         : 0;
 
-    $baseQuery = turfSelectSql();
+    try {
 
-    // --------------------------------------------------
-    // SINGLE TURF
-    // --------------------------------------------------
-    if ($id > 0) {
+        // ==================================================
+        // SINGLE TURF
+        // ==================================================
+        if ($id > 0) {
 
-        $stmt = $con->prepare(
-            $baseQuery . "
-            WHERE turf_tb.turf_id = ?
-            LIMIT 1"
-        );
+            $sql = "
+                SELECT
+                    turf_tb.turf_id,
+                    turf_tb.owner_id,
+                    turf_tb.turf_name,
+                    turf_tb.location,
+                    turf_tb.price,
+                    turf_tb.status,
 
-        if (!$stmt) {
+                    (
+                        SELECT ti.image_url
+                        FROM turf_images ti
+                        WHERE ti.turf_id = turf_tb.turf_id
+                        ORDER BY
+                            ti.is_cover DESC,
+                            ti.image_id ASC
+                        LIMIT 1
+                    ) AS image
+
+                FROM turf_tb
+
+                WHERE turf_tb.turf_id = ?
+
+                LIMIT 1
+            ";
+
+            $stmt = $con->prepare($sql);
+
+            if (!$stmt) {
+                response(
+                    false,
+                    "Failed to prepare turf query",
+                    [
+                        "error" => $con->error,
+                    ],
+                    500
+                );
+            }
+
+            $stmt->bind_param(
+                "i",
+                $id
+            );
+
+        // ==================================================
+        // ALL TURFS
+        // ==================================================
+        } else {
+
+            $sql = "
+                SELECT
+                    turf_tb.turf_id,
+                    turf_tb.owner_id,
+                    turf_tb.turf_name,
+                    turf_tb.location,
+                    turf_tb.price,
+                    turf_tb.status,
+
+                    (
+                        SELECT ti.image_url
+                        FROM turf_images ti
+                        WHERE ti.turf_id = turf_tb.turf_id
+                        ORDER BY
+                            ti.is_cover DESC,
+                            ti.image_id ASC
+                        LIMIT 1
+                    ) AS image
+
+                FROM turf_tb
+
+                WHERE turf_tb.status != 'deleted'
+
+                ORDER BY turf_tb.turf_id DESC
+            ";
+
+            $stmt = $con->prepare($sql);
+
+            if (!$stmt) {
+                response(
+                    false,
+                    "Failed to prepare turf query",
+                    [
+                        "error" => $con->error,
+                    ],
+                    500
+                );
+            }
+        }
+
+        // ==================================================
+        // EXECUTE QUERY
+        // ==================================================
+        if (!$stmt->execute()) {
+
+            $error = $stmt->error;
+
+            $stmt->close();
+
             response(
                 false,
-                "Database query failed",
-                [],
+                "Failed to fetch turfs",
+                [
+                    "error" => $error,
+                ],
                 500
             );
         }
 
-        $stmt->bind_param(
-            "i",
-            $id
-        );
+        // ==================================================
+        // GET RESULT
+        // ==================================================
+        $result = $stmt->get_result();
 
-    // --------------------------------------------------
-    // ALL TURFS
-    // --------------------------------------------------
-    } else {
+        if (!$result) {
 
-        $stmt = $con->prepare(
-            $baseQuery . "
-            WHERE turf_tb.status != 'deleted'
-            ORDER BY turf_tb.turf_id DESC"
-        );
+            $error = $stmt->error;
 
-        if (!$stmt) {
+            $stmt->close();
+
             response(
                 false,
-                "Database query failed",
-                [],
+                "Failed to read turf results",
+                [
+                    "error" => $error,
+                ],
                 500
             );
         }
-    }
 
-    // --------------------------------------------------
-    // EXECUTE
-    // --------------------------------------------------
-    if (!$stmt->execute()) {
+        $turfs = [];
 
-        $error = $stmt->error;
+        while ($row = $result->fetch_assoc()) {
+            $turfs[] = turfRow($row);
+        }
 
         $stmt->close();
 
+        // ==================================================
+        // SINGLE TURF RESPONSE
+        // ==================================================
+        if ($id > 0) {
+
+            if ($turfs === []) {
+                response(
+                    false,
+                    "Turf not found",
+                    [],
+                    404
+                );
+            }
+
+            response(
+                true,
+                "Turf fetched successfully",
+                [
+                    "turf" => $turfs[0],
+                    "data" => $turfs[0],
+                ]
+            );
+        }
+
+        // ==================================================
+        // ALL TURFS RESPONSE
+        // ==================================================
+        response(
+            true,
+            "Turfs fetched successfully",
+            [
+                "turfs" => $turfs,
+            ]
+        );
+
+    } catch (Throwable $e) {
+
         response(
             false,
-            "Failed to fetch turfs",
+            "Turf GET request failed",
             [
-                "error" => $error,
+                "error" => $e->getMessage(),
+                "file" => basename(
+                    $e->getFile()
+                ),
+                "line" => $e->getLine(),
             ],
             500
         );
     }
-
-    $result = $stmt->get_result();
-
-    // --------------------------------------------------
-    // SINGLE TURF
-    // --------------------------------------------------
-    if ($id > 0) {
-
-        $row = $result->fetch_assoc();
-
-        $stmt->close();
-
-        if (!$row) {
-            response(
-                false,
-                "Turf not found",
-                [],
-                404
-            );
-        }
-
-        $turf = turfRow($row);
-
-        response(
-            true,
-            "Turf fetched successfully",
-            [
-                "turf" => $turf,
-                // Also provide a data wrapper for compatibility
-                "data" => $turf,
-            ]
-        );
-    }
-
-    // --------------------------------------------------
-    // ALL TURFS
-    // --------------------------------------------------
-    $turfs = [];
-
-    while ($row = $result->fetch_assoc()) {
-        $turfs[] = turfRow($row);
-    }
-
-    $stmt->close();
-
-    response(
-        true,
-        "Turfs fetched successfully",
-        [
-            "turfs" => $turfs,
-        ]
-    );
 }
 
 // ======================================================
@@ -472,7 +543,7 @@ if ($method === "POST") {
         $data["price"] ?? 0
     );
 
-    // Owner gets owner ID from JWT
+    // Owner gets owner_id from JWT
     // Admin must provide owner_id
     $ownerId = $role === "owner"
         ? $userId
@@ -486,9 +557,9 @@ if ($method === "POST") {
         )
     );
 
-    // --------------------------------------------------
+    // ==================================================
     // VALIDATION
-    // --------------------------------------------------
+    // ==================================================
     if ($turfName === "") {
         response(
             false,
@@ -541,9 +612,9 @@ if ($method === "POST") {
         $status = "active";
     }
 
-    // --------------------------------------------------
-    // INSERT
-    // --------------------------------------------------
+    // ==================================================
+    // INSERT TURF
+    // ==================================================
     $stmt = $con->prepare(
         "INSERT INTO turf_tb
         (
@@ -560,7 +631,9 @@ if ($method === "POST") {
         response(
             false,
             "Failed to prepare turf insert",
-            [],
+            [
+                "error" => $con->error,
+            ],
             500
         );
     }
@@ -625,16 +698,16 @@ if (
         );
     }
 
-    // --------------------------------------------------
+    // ==================================================
     // OWNER OWNERSHIP CHECK
-    // --------------------------------------------------
+    // ==================================================
     if ($role === "owner") {
 
         $check = $con->prepare(
             "SELECT turf_id
              FROM turf_tb
              WHERE turf_id = ?
-               AND owner_id = ?
+             AND owner_id = ?
              LIMIT 1"
         );
 
@@ -642,7 +715,9 @@ if (
             response(
                 false,
                 "Database query failed",
-                [],
+                [
+                    "error" => $con->error,
+                ],
                 500
             );
         }
@@ -686,9 +761,9 @@ if (
         $check->close();
     }
 
-    // --------------------------------------------------
+    // ==================================================
     // BUILD UPDATE QUERY
-    // --------------------------------------------------
+    // ==================================================
     $fields = [];
     $types = "";
     $values = [];
@@ -845,12 +920,15 @@ if (
         );
     }
 
-    // --------------------------------------------------
-    // SQL
-    // --------------------------------------------------
+    // ==================================================
+    // UPDATE SQL
+    // ==================================================
     $sql =
         "UPDATE turf_tb SET "
-        . implode(", ", $fields)
+        . implode(
+            ", ",
+            $fields
+        )
         . " WHERE turf_id = ?";
 
     $types .= "i";
@@ -862,7 +940,9 @@ if (
         response(
             false,
             "Failed to prepare turf update",
-            [],
+            [
+                "error" => $con->error,
+            ],
             500
         );
     }
@@ -877,7 +957,10 @@ if (
 
     if (
         !call_user_func_array(
-            [$stmt, "bind_param"],
+            [
+                $stmt,
+                "bind_param",
+            ],
             $bindReferences
         )
     ) {
@@ -936,16 +1019,16 @@ if ($method === "DELETE") {
         );
     }
 
-    // --------------------------------------------------
+    // ==================================================
     // OWNER OWNERSHIP CHECK
-    // --------------------------------------------------
+    // ==================================================
     if ($role === "owner") {
 
         $check = $con->prepare(
             "SELECT turf_id
              FROM turf_tb
              WHERE turf_id = ?
-               AND owner_id = ?
+             AND owner_id = ?
              LIMIT 1"
         );
 
@@ -953,7 +1036,9 @@ if ($method === "DELETE") {
             response(
                 false,
                 "Database query failed",
-                [],
+                [
+                    "error" => $con->error,
+                ],
                 500
             );
         }
@@ -993,9 +1078,9 @@ if ($method === "DELETE") {
         $check->close();
     }
 
-    // --------------------------------------------------
+    // ==================================================
     // CHECK BOOKING HISTORY
-    // --------------------------------------------------
+    // ==================================================
     $bookingCheck = $con->prepare(
         "SELECT COUNT(*) AS total
          FROM bookings
@@ -1005,8 +1090,10 @@ if ($method === "DELETE") {
     if (!$bookingCheck) {
         response(
             false,
-            "Could not check turf bookings. Verify that bookings.turf_id exists.",
-            [],
+            "Could not check turf bookings",
+            [
+                "error" => $con->error,
+            ],
             500
         );
     }
@@ -1018,12 +1105,16 @@ if ($method === "DELETE") {
 
     if (!$bookingCheck->execute()) {
 
+        $error = $bookingCheck->error;
+
         $bookingCheck->close();
 
         response(
             false,
             "Failed to check turf booking history",
-            [],
+            [
+                "error" => $error,
+            ],
             500
         );
     }
@@ -1039,9 +1130,9 @@ if ($method === "DELETE") {
 
     $bookingCheck->close();
 
-    // --------------------------------------------------
+    // ==================================================
     // SOFT DELETE IF BOOKINGS EXIST
-    // --------------------------------------------------
+    // ==================================================
     if ($bookingCount > 0) {
 
         $stmt = $con->prepare(
@@ -1054,7 +1145,9 @@ if ($method === "DELETE") {
             response(
                 false,
                 "Failed to prepare turf delete",
-                [],
+                [
+                    "error" => $con->error,
+                ],
                 500
             );
         }
@@ -1066,12 +1159,16 @@ if ($method === "DELETE") {
 
         if (!$stmt->execute()) {
 
+            $error = $stmt->error;
+
             $stmt->close();
 
             response(
                 false,
                 "Failed to mark turf as deleted",
-                [],
+                [
+                    "error" => $error,
+                ],
                 500
             );
         }
@@ -1084,11 +1181,9 @@ if ($method === "DELETE") {
         );
     }
 
-    // --------------------------------------------------
+    // ==================================================
     // HARD DELETE IF NO BOOKINGS
-    // turf_images will also be deleted because of
-    // ON DELETE CASCADE on turf_id
-    // --------------------------------------------------
+    // ==================================================
     $stmt = $con->prepare(
         "DELETE FROM turf_tb
          WHERE turf_id = ?"
@@ -1098,7 +1193,9 @@ if ($method === "DELETE") {
         response(
             false,
             "Failed to prepare turf delete",
-            [],
+            [
+                "error" => $con->error,
+            ],
             500
         );
     }
