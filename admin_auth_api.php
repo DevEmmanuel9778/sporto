@@ -1,14 +1,6 @@
 
 <?php
-cd C:\xampp\htdocs\sporto.php
 
-git status
-
-git add user_auth_api.php owner_auth_api.php admin_auth_api.php
-
-git commit -m "Update user owner admin JWT authentication"
-
-git push origin main
 
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
