@@ -1,3 +1,4 @@
+
 <?php
 
 use Firebase\JWT\JWT;
@@ -9,16 +10,25 @@ header('Cache-Control: no-store');
 require_once __DIR__ . '/vendor/autoload.php';
 
 // ============================================================
+// TOKEN EXPIRY
+// ============================================================
+
+const USER_ACCESS_LIFETIME = 24 * 60 * 60;
+const USER_REFRESH_LIFETIME = 100 * 24 * 60 * 60;
+
+// ============================================================
 // RESPONSE
 // ============================================================
 
 function authResponse(int $code, array $data): never
 {
     http_response_code($code);
+
     echo json_encode(
         $data,
         JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE
     );
+
     exit;
 }
 
@@ -41,7 +51,9 @@ function authDb(): mysqli
         ]);
     }
 
-    mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+    mysqli_report(
+        MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT
+    );
 
     $db = mysqli_init();
 
@@ -68,7 +80,7 @@ function authDb(): mysqli
 }
 
 // ============================================================
-// JWT
+// JWT SECRET
 // ============================================================
 
 function authSecret(): string
@@ -84,6 +96,10 @@ function authSecret(): string
 
     return $secret;
 }
+
+// ============================================================
+// CREATE USER TOKEN
+// ============================================================
 
 function createUserToken(
     int $userId,
@@ -104,6 +120,10 @@ function createUserToken(
         'jti' => bin2hex(random_bytes(16))
     ], authSecret(), 'HS256');
 }
+
+// ============================================================
+// VERIFY USER TOKEN
+// ============================================================
 
 function verifyUserToken(
     string $token,
@@ -136,6 +156,10 @@ function verifyUserToken(
     }
 }
 
+// ============================================================
+// BEARER TOKEN
+// ============================================================
+
 function getBearerToken(): string
 {
     $header =
@@ -152,7 +176,11 @@ function getBearerToken(): string
         }
     }
 
-    if (!preg_match('/^Bearer\s+(\S+)$/i', trim($header), $matches)) {
+    if (!preg_match(
+        '/^Bearer\s+(\S+)$/i',
+        trim($header),
+        $matches
+    )) {
         authResponse(401, [
             'status' => false,
             'message' => 'Bearer token required'
@@ -170,26 +198,23 @@ function issueUserTokens(
     mysqli $db,
     int $userId
 ): array {
-    $accessLifetime = 900;
-    $refreshLifetime = 604800;
-
     $accessToken = createUserToken(
         $userId,
         'access',
-        $accessLifetime
+        USER_ACCESS_LIFETIME
     );
 
     $refreshToken = createUserToken(
         $userId,
         'refresh',
-        $refreshLifetime
+        USER_REFRESH_LIFETIME
     );
 
     $tokenHash = hash('sha256', $refreshToken);
 
     $expiresAt = gmdate(
         'Y-m-d H:i:s',
-        time() + $refreshLifetime
+        time() + USER_REFRESH_LIFETIME
     );
 
     $stmt = $db->prepare(
@@ -211,12 +236,12 @@ function issueUserTokens(
         'access_token' => $accessToken,
         'refresh_token' => $refreshToken,
         'token_type' => 'Bearer',
-        'expires_in' => $accessLifetime
+        'expires_in' => USER_ACCESS_LIFETIME
     ];
 }
 
 // ============================================================
-// REQUEST
+// REQUEST VALIDATION
 // ============================================================
 
 if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
@@ -249,26 +274,37 @@ $action = strtolower(
 // ============================================================
 
 try {
-
     switch ($action) {
 
         // ====================================================
-        // USER REGISTER
+        // REGISTER
         // ====================================================
 
         case 'register':
 
-            $name = trim((string) ($body['name'] ?? ''));
+            $name = trim(
+                (string) ($body['name'] ?? '')
+            );
+
             $email = strtolower(
                 trim((string) ($body['email'] ?? ''))
             );
-            $phone = trim((string) ($body['phone'] ?? ''));
-            $password = (string) ($body['password'] ?? '');
+
+            $phone = trim(
+                (string) ($body['phone'] ?? '')
+            );
+
+            $password = (string) (
+                $body['password'] ?? ''
+            );
 
             if (
                 mb_strlen($name) < 2 ||
                 mb_strlen($name) > 100 ||
-                !filter_var($email, FILTER_VALIDATE_EMAIL) ||
+                !filter_var(
+                    $email,
+                    FILTER_VALIDATE_EMAIL
+                ) ||
                 strlen($email) > 191 ||
                 strlen($phone) > 20 ||
                 strlen($password) < 8 ||
@@ -323,7 +359,10 @@ try {
 
             $userId = (int) $db->insert_id;
 
-            $tokens = issueUserTokens($db, $userId);
+            $tokens = issueUserTokens(
+                $db,
+                $userId
+            );
 
             $db->commit();
 
@@ -341,7 +380,7 @@ try {
             ]);
 
         // ====================================================
-        // USER LOGIN
+        // LOGIN
         // ====================================================
 
         case 'login':
@@ -350,10 +389,15 @@ try {
                 trim((string) ($body['email'] ?? ''))
             );
 
-            $password = (string) ($body['password'] ?? '');
+            $password = (string) (
+                $body['password'] ?? ''
+            );
 
             if (
-                !filter_var($email, FILTER_VALIDATE_EMAIL) ||
+                !filter_var(
+                    $email,
+                    FILTER_VALIDATE_EMAIL
+                ) ||
                 $password === ''
             ) {
                 authResponse(422, [
@@ -375,11 +419,16 @@ try {
             $stmt->bind_param('s', $email);
             $stmt->execute();
 
-            $user = $stmt->get_result()->fetch_assoc();
+            $user = $stmt
+                ->get_result()
+                ->fetch_assoc();
 
             if (
                 !$user ||
-                !password_verify($password, $user['password'])
+                !password_verify(
+                    $password,
+                    $user['password']
+                )
             ) {
                 authResponse(401, [
                     'status' => false,
@@ -435,6 +484,7 @@ try {
             );
 
             $db = authDb();
+
             $db->begin_transaction();
 
             $stmt = $db->prepare(
@@ -455,7 +505,9 @@ try {
 
             $stmt->execute();
 
-            $storedToken = $stmt->get_result()->fetch_assoc();
+            $storedToken = $stmt
+                ->get_result()
+                ->fetch_assoc();
 
             if (!$storedToken) {
                 $db->rollback();
@@ -466,6 +518,8 @@ try {
                 ]);
             }
 
+            // Revoke old refresh token.
+
             $stmt = $db->prepare(
                 'UPDATE user_refresh_tokens
                  SET revoked_at = UTC_TIMESTAMP()
@@ -474,10 +528,19 @@ try {
 
             $storedId = (int) $storedToken['id'];
 
-            $stmt->bind_param('i', $storedId);
+            $stmt->bind_param(
+                'i',
+                $storedId
+            );
+
             $stmt->execute();
 
-            $tokens = issueUserTokens($db, $userId);
+            // Issue new access + refresh tokens.
+
+            $tokens = issueUserTokens(
+                $db,
+                $userId
+            );
 
             $db->commit();
 
@@ -489,15 +552,10 @@ try {
             ]);
 
         // ====================================================
-        // USER LOGOUT
+        // LOGOUT
         // ====================================================
 
         case 'logout':
-
-            $accessClaims = verifyUserToken(
-                getBearerToken(),
-                'access'
-            );
 
             $refreshToken = (string) (
                 $body['refresh_token'] ?? ''
@@ -513,6 +571,11 @@ try {
             $refreshClaims = verifyUserToken(
                 $refreshToken,
                 'refresh'
+            );
+
+            $accessClaims = verifyUserToken(
+                getBearerToken(),
+                'access'
             );
 
             if (
@@ -555,6 +618,10 @@ try {
                 'message' => 'Logged out successfully'
             ]);
 
+        // ====================================================
+        // UNKNOWN ACTION
+        // ====================================================
+
         default:
 
             authResponse(404, [
@@ -583,7 +650,8 @@ try {
     }
 
     error_log(
-        'Sporto User Auth DB Error: ' . $e->getMessage()
+        'Sporto User Auth DB Error: ' .
+        $e->getMessage()
     );
 
     authResponse(500, [
@@ -601,7 +669,8 @@ try {
     }
 
     error_log(
-        'Sporto User Auth Error: ' . $e->getMessage()
+        'Sporto User Auth Error: ' .
+        $e->getMessage()
     );
 
     authResponse(500, [

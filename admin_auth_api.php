@@ -1,47 +1,62 @@
 
 <?php
+cd C:\xampp\htdocs\sporto.php
 
-// ======================================================
+git status
+
+git add user_auth_api.php owner_auth_api.php admin_auth_api.php
+
+git commit -m "Update user owner admin JWT authentication"
+
+git push origin main
+
+use Firebase\JWT\JWT;
+use Firebase\JWT\Key;
+
+// ============================================================
 // ERROR HANDLING
-// ======================================================
-ini_set("display_errors", "0");
-ini_set("log_errors", "1");
+// ============================================================
+
+ini_set('display_errors', '0');
+ini_set('log_errors', '1');
 error_reporting(E_ALL);
 
-mysqli_report(MYSQLI_REPORT_OFF);
-
-// ======================================================
-// HEADERS / CORS
-// ======================================================
-header("Content-Type: application/json; charset=UTF-8");
-header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: POST, OPTIONS");
-header(
-    "Access-Control-Allow-Headers: Content-Type, Authorization"
+mysqli_report(
+    MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT
 );
-header("Access-Control-Max-Age: 86400");
 
-// ======================================================
-// OPTIONS / PREFLIGHT
-// ======================================================
-if (
-    ($_SERVER["REQUEST_METHOD"] ?? "") === "OPTIONS"
-) {
+// ============================================================
+// HEADERS / CORS
+// ============================================================
+
+header('Content-Type: application/json; charset=UTF-8');
+header('Cache-Control: no-store');
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Methods: POST, OPTIONS');
+header(
+    'Access-Control-Allow-Headers: Content-Type, Authorization'
+);
+header('Access-Control-Max-Age: 86400');
+
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') {
     http_response_code(204);
     exit;
 }
 
-// ======================================================
-// REQUIRED FILES
-// ======================================================
-require_once __DIR__ . "/vendor/autoload.php";
+require_once __DIR__ . '/vendor/autoload.php';
 
-use Firebase\JWT\JWT;
+// ============================================================
+// TOKEN CONFIGURATION
+// ============================================================
 
-// ======================================================
-// RESPONSE HELPER
-// ======================================================
-function sendResponse(
+const ADMIN_ACCESS_LIFETIME = 24 * 60 * 60;
+const ADMIN_REFRESH_LIFETIME = 100 * 24 * 60 * 60;
+
+// ============================================================
+// RESPONSE
+// ============================================================
+
+function adminResponse(
     bool $status,
     string $message,
     array $data = [],
@@ -52,47 +67,388 @@ function sendResponse(
     echo json_encode(
         array_merge(
             [
-                "status" => $status,
-                "message" => $message,
+                'status' => $status,
+                'message' => $message
             ],
             $data
         ),
-        JSON_UNESCAPED_UNICODE
-        | JSON_UNESCAPED_SLASHES
-        | JSON_INVALID_UTF8_SUBSTITUTE
+        JSON_UNESCAPED_UNICODE |
+        JSON_UNESCAPED_SLASHES |
+        JSON_INVALID_UTF8_SUBSTITUTE
     );
 
     exit;
 }
 
-// ======================================================
-// REQUEST METHOD
-// ======================================================
-$method = strtoupper(
-    $_SERVER["REQUEST_METHOD"] ?? ""
-);
+// ============================================================
+// ENVIRONMENT VARIABLES
+// ============================================================
 
-if ($method !== "POST") {
-    sendResponse(
+function adminEnv(string $name): string
+{
+    $value = getenv($name);
+
+    if (
+        $value === false ||
+        trim($value) === ''
+    ) {
+        error_log(
+            'Missing admin environment variable: ' .
+            $name
+        );
+
+        adminResponse(
+            false,
+            'Server configuration missing',
+            [],
+            500
+        );
+    }
+
+    return $value;
+}
+
+function adminSecret(): string
+{
+    return adminEnv('JWT_SECRET');
+}
+
+// ============================================================
+// AIVEN DATABASE
+// ============================================================
+
+function adminDb(): mysqli
+{
+    $host = adminEnv('DB_HOST');
+    $username = adminEnv('DB_USER');
+    $password = getenv('DB_PASSWORD');
+    $database = adminEnv('DB_NAME');
+    $port = (int) (getenv('DB_PORT') ?: 3306);
+
+    if (
+        $password === false ||
+        $port <= 0
+    ) {
+        adminResponse(
+            false,
+            'Database configuration missing',
+            [],
+            500
+        );
+    }
+
+    $db = mysqli_init();
+
+    if ($db === false) {
+        throw new RuntimeException(
+            'Database initialization failed'
+        );
+    }
+
+    $ca = getenv('DB_SSL_CA');
+
+    if ($ca) {
+        $db->ssl_set(
+            null,
+            null,
+            $ca,
+            null,
+            null
+        );
+    }
+
+    $db->real_connect(
+        $host,
+        $username,
+        $password,
+        $database,
+        $port,
+        null,
+        MYSQLI_CLIENT_SSL
+    );
+
+    $db->set_charset('utf8mb4');
+
+    $db->query(
+        "SET time_zone = '+00:00'"
+    );
+
+    return $db;
+}
+
+// ============================================================
+// CREATE ADMIN JWT
+// ============================================================
+
+function createAdminToken(
+    int $adminId,
+    string $username,
+    string $type,
+    int $lifetime
+): string {
+    $now = time();
+
+    return JWT::encode(
+        [
+            'iss' => 'sporto-api',
+            'sub' => (string) $adminId,
+            'iat' => $now,
+            'nbf' => $now,
+            'exp' => $now + $lifetime,
+            'jti' => bin2hex(
+                random_bytes(16)
+            ),
+
+            // Existing admin claims.
+            'user_id' => $adminId,
+            'name' => $username,
+            'email' => $username,
+            'role' => 'admin',
+            'type' => $type
+        ],
+        adminSecret(),
+        'HS256'
+    );
+}
+
+// ============================================================
+// VERIFY ADMIN JWT
+// ============================================================
+
+function verifyAdminToken(
+    string $token,
+    string $expectedType
+): object {
+    try {
+        $claims = JWT::decode(
+            $token,
+            new Key(
+                adminSecret(),
+                'HS256'
+            )
+        );
+    } catch (Throwable $e) {
+        adminResponse(
+            false,
+            'Invalid or expired admin token',
+            [],
+            401
+        );
+    }
+
+    if (
+        ($claims->iss ?? null) !== 'sporto-api' ||
+        ($claims->role ?? null) !== 'admin' ||
+        ($claims->type ?? null) !== $expectedType
+    ) {
+        adminResponse(
+            false,
+            'Invalid admin token',
+            [],
+            401
+        );
+    }
+
+    $adminId = (int) (
+        $claims->user_id ??
+        $claims->sub ??
+        0
+    );
+
+    if ($adminId <= 0) {
+        adminResponse(
+            false,
+            'Invalid admin ID',
+            [],
+            401
+        );
+    }
+
+    return $claims;
+}
+
+// ============================================================
+// BEARER TOKEN
+// ============================================================
+
+function getAdminBearerToken(): string
+{
+    $header =
+        $_SERVER['HTTP_AUTHORIZATION'] ??
+        $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ??
+        '';
+
+    if (
+        $header === '' &&
+        function_exists('getallheaders')
+    ) {
+        foreach (getallheaders() as $key => $value) {
+            if (
+                strcasecmp(
+                    $key,
+                    'Authorization'
+                ) === 0
+            ) {
+                $header = $value;
+                break;
+            }
+        }
+    }
+
+    if (
+        !preg_match(
+            '/^Bearer\s+(\S+)$/i',
+            trim($header),
+            $matches
+        )
+    ) {
+        adminResponse(
+            false,
+            'Bearer token required',
+            [],
+            401
+        );
+    }
+
+    return $matches[1];
+}
+
+// ============================================================
+// FIND CONFIGURED ADMIN
+// ============================================================
+
+function findAdmin(
+    mysqli $db,
+    string $username
+): ?array {
+    $stmt = $db->prepare(
+        'SELECT id, username
+         FROM adminreg_tb
+         WHERE username = ?
+         LIMIT 1'
+    );
+
+    $stmt->bind_param(
+        's',
+        $username
+    );
+
+    $stmt->execute();
+
+    $admin = $stmt
+        ->get_result()
+        ->fetch_assoc();
+
+    $stmt->close();
+
+    return $admin ?: null;
+}
+
+// ============================================================
+// ISSUE ADMIN TOKENS
+// ============================================================
+
+function issueAdminTokens(
+    mysqli $db,
+    int $adminId,
+    string $username
+): array {
+    $accessToken = createAdminToken(
+        $adminId,
+        $username,
+        'access',
+        ADMIN_ACCESS_LIFETIME
+    );
+
+    $refreshToken = createAdminToken(
+        $adminId,
+        $username,
+        'refresh',
+        ADMIN_REFRESH_LIFETIME
+    );
+
+    $refreshHash = hash(
+        'sha256',
+        $refreshToken
+    );
+
+    $expiresAt = gmdate(
+        'Y-m-d H:i:s',
+        time() + ADMIN_REFRESH_LIFETIME
+    );
+
+    // Preserve existing access-token column.
+    $stmt = $db->prepare(
+        'UPDATE adminreg_tb
+         SET token = ?
+         WHERE id = ?'
+    );
+
+    $stmt->bind_param(
+        'si',
+        $accessToken,
+        $adminId
+    );
+
+    $stmt->execute();
+    $stmt->close();
+
+    // Store only the refresh-token hash.
+    $stmt = $db->prepare(
+        'INSERT INTO admin_refresh_tokens
+         (admin_id, token_hash, expires_at)
+         VALUES (?, ?, ?)'
+    );
+
+    $stmt->bind_param(
+        'iss',
+        $adminId,
+        $refreshHash,
+        $expiresAt
+    );
+
+    $stmt->execute();
+    $stmt->close();
+
+    return [
+        'access_token' => $accessToken,
+        'refresh_token' => $refreshToken,
+        'token_type' => 'Bearer',
+        'expires_in' => ADMIN_ACCESS_LIFETIME,
+        'refresh_expires_in' => ADMIN_REFRESH_LIFETIME
+    ];
+}
+
+// ============================================================
+// REQUEST METHOD
+// ============================================================
+
+if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+    header('Allow: POST, OPTIONS');
+
+    adminResponse(
         false,
-        "Only POST requests are allowed",
+        'Only POST requests are allowed',
         [],
         405
     );
 }
 
-// ======================================================
-// READ JSON BODY
-// ======================================================
-$rawInput = file_get_contents("php://input");
+// ============================================================
+// JSON BODY
+// ============================================================
+
+$rawInput = file_get_contents(
+    'php://input'
+);
 
 if (
     $rawInput === false ||
-    trim($rawInput) === ""
+    trim($rawInput) === ''
 ) {
-    sendResponse(
+    adminResponse(
         false,
-        "Request body is required",
+        'Request body is required',
         [],
         400
     );
@@ -104,398 +460,411 @@ $data = json_decode(
 );
 
 if (!is_array($data)) {
-    sendResponse(
+    adminResponse(
         false,
-        "Invalid JSON request",
+        'Invalid JSON request',
         [],
         400
     );
 }
 
-// ======================================================
-// ACTION
-// ======================================================
+// Support JSON action and URL action.
 $action = strtolower(
     trim(
         (string) (
-            $data["action"] ?? ""
+            $data['action'] ??
+            $_GET['action'] ??
+            ''
         )
     )
 );
 
-if ($action !== "login") {
-    sendResponse(
-        false,
-        "Invalid action. Use login",
-        [],
-        400
-    );
-}
-
-// ======================================================
-// PERMANENT ADMIN CREDENTIALS
-// ======================================================
-//
-// ONLY these credentials can access Admin.
-//
-// Username:
-// sporto_root_admin
-//
-// Password:
-// Spt0!Adm#92_Kx@7Qm
-//
-// No admin registration is supported.
-// ======================================================
-$permanentUsername = "sporto_root_admin";
-$permanentPassword = "Spt0!Adm#92_Kx@7Qm";
-
-// ======================================================
-// LOGIN INPUT
-// ======================================================
-$loginUsername = trim(
-    (string) (
-        $data["username"]
-        ?? $data["email"]
-        ?? ""
+if (
+    !in_array(
+        $action,
+        ['login', 'refresh', 'logout'],
+        true
     )
-);
-
-$loginPassword = (string) (
-    $data["password"] ?? ""
-);
-
-if (
-    $loginUsername === "" ||
-    $loginPassword === ""
 ) {
-    sendResponse(
+    adminResponse(
         false,
-        "Username and password are required",
+        'Invalid action',
         [],
         400
     );
 }
 
-// ======================================================
-// CHECK PERMANENT CREDENTIALS
-// ======================================================
-$usernameValid = hash_equals(
-    $permanentUsername,
-    $loginUsername
-);
+// ============================================================
+// ADMIN AUTHENTICATION
+// ============================================================
 
-$passwordValid = hash_equals(
-    $permanentPassword,
-    $loginPassword
-);
-
-if (
-    !$usernameValid ||
-    !$passwordValid
-) {
-    sendResponse(
-        false,
-        "Invalid username or password",
-        [],
-        401
-    );
-}
-
-// ======================================================
-// JWT SECRET
-// ======================================================
-$secretKey = getenv("JWT_SECRET");
-
-if (
-    $secretKey === false ||
-    trim($secretKey) === ""
-) {
-    sendResponse(
-        false,
-        "JWT_SECRET environment variable is missing",
-        [],
-        500
-    );
-}
-
-// ======================================================
-// DATABASE ENVIRONMENT
-// ======================================================
-$dbHost = getenv("DB_HOST");
-$dbPort = (int) (
-    getenv("DB_PORT") ?: 0
-);
-$dbName = getenv("DB_NAME");
-$dbUser = getenv("DB_USER");
-$dbPassword = getenv("DB_PASSWORD");
-
-if (
-    $dbHost === false ||
-    trim($dbHost) === "" ||
-    $dbPort <= 0 ||
-    $dbName === false ||
-    trim($dbName) === "" ||
-    $dbUser === false ||
-    trim($dbUser) === "" ||
-    $dbPassword === false
-) {
-    sendResponse(
-        false,
-        "Database environment variables are missing or invalid",
-        [],
-        500
-    );
-}
-
-// ======================================================
-// AIVEN SSL CONNECTION
-// ======================================================
 try {
-    $con = mysqli_init();
-
-    if ($con === false) {
-        throw new RuntimeException(
-            "Failed to initialize MySQL connection"
-        );
-    }
-
-    mysqli_ssl_set(
-        $con,
-        null,
-        null,
-        null,
-        null,
-        null
+    $configuredUsername = adminEnv(
+        'ADMIN_USERNAME'
     );
 
-    $connected = mysqli_real_connect(
-        $con,
-        $dbHost,
-        $dbUser,
-        $dbPassword,
-        $dbName,
-        $dbPort,
-        null,
-        MYSQLI_CLIENT_SSL
+    $configuredPasswordHash = adminEnv(
+        'ADMIN_PASSWORD_HASH'
     );
 
-    if (!$connected) {
-        throw new RuntimeException(
-            mysqli_connect_error()
-                ?: "Unknown database connection error"
-        );
+    $db = adminDb();
+
+    switch ($action) {
+
+        // ====================================================
+        // ADMIN LOGIN
+        // ====================================================
+
+        case 'login':
+
+            $loginUsername = trim(
+                (string) (
+                    $data['username'] ??
+                    $data['email'] ??
+                    ''
+                )
+            );
+
+            $loginPassword = (string) (
+                $data['password'] ?? ''
+            );
+
+            if (
+                $loginUsername === '' ||
+                $loginPassword === ''
+            ) {
+                adminResponse(
+                    false,
+                    'Username and password are required',
+                    [],
+                    400
+                );
+            }
+
+            $usernameValid = hash_equals(
+                $configuredUsername,
+                $loginUsername
+            );
+
+            $passwordValid = password_verify(
+                $loginPassword,
+                $configuredPasswordHash
+            );
+
+            if (
+                !$usernameValid ||
+                !$passwordValid
+            ) {
+                adminResponse(
+                    false,
+                    'Invalid username or password',
+                    [],
+                    401
+                );
+            }
+
+            $admin = findAdmin(
+                $db,
+                $configuredUsername
+            );
+
+            if (!$admin) {
+                adminResponse(
+                    false,
+                    'Admin account is not configured',
+                    [],
+                    500
+                );
+            }
+
+            $adminId = (int) $admin['id'];
+
+            $db->begin_transaction();
+
+            $tokens = issueAdminTokens(
+                $db,
+                $adminId,
+                $configuredUsername
+            );
+
+            $db->commit();
+
+            adminResponse(
+                true,
+                'Admin login successful',
+                [
+                    'user_id' => $adminId,
+                    'name' => $configuredUsername,
+                    'email' => $configuredUsername,
+                    'role' => 'admin',
+                    ...$tokens
+                ]
+            );
+
+        // ====================================================
+        // ADMIN REFRESH
+        // ====================================================
+
+        case 'refresh':
+
+            $refreshToken = trim(
+                (string) (
+                    $data['refresh_token'] ?? ''
+                )
+            );
+
+            if ($refreshToken === '') {
+                adminResponse(
+                    false,
+                    'Refresh token required',
+                    [],
+                    422
+                );
+            }
+
+            $claims = verifyAdminToken(
+                $refreshToken,
+                'refresh'
+            );
+
+            $adminId = (int) (
+                $claims->user_id ??
+                $claims->sub
+            );
+
+            $refreshHash = hash(
+                'sha256',
+                $refreshToken
+            );
+
+            $db->begin_transaction();
+
+            $stmt = $db->prepare(
+                'SELECT id
+                 FROM admin_refresh_tokens
+                 WHERE admin_id = ?
+                   AND token_hash = ?
+                   AND revoked_at IS NULL
+                   AND expires_at > UTC_TIMESTAMP()
+                 FOR UPDATE'
+            );
+
+            $stmt->bind_param(
+                'is',
+                $adminId,
+                $refreshHash
+            );
+
+            $stmt->execute();
+
+            $storedToken = $stmt
+                ->get_result()
+                ->fetch_assoc();
+
+            $stmt->close();
+
+            if (!$storedToken) {
+                $db->rollback();
+
+                adminResponse(
+                    false,
+                    'Refresh token revoked or expired',
+                    [],
+                    401
+                );
+            }
+
+            // Verify that the admin still exists.
+            $admin = findAdmin(
+                $db,
+                $configuredUsername
+            );
+
+            if (
+                !$admin ||
+                (int) $admin['id'] !== $adminId
+            ) {
+                $db->rollback();
+
+                adminResponse(
+                    false,
+                    'Admin account not found',
+                    [],
+                    401
+                );
+            }
+
+            // Revoke old refresh token.
+            $storedId = (int) $storedToken['id'];
+
+            $stmt = $db->prepare(
+                'UPDATE admin_refresh_tokens
+                 SET revoked_at = UTC_TIMESTAMP()
+                 WHERE id = ?'
+            );
+
+            $stmt->bind_param(
+                'i',
+                $storedId
+            );
+
+            $stmt->execute();
+            $stmt->close();
+
+            // Generate a new token pair.
+            $tokens = issueAdminTokens(
+                $db,
+                $adminId,
+                $configuredUsername
+            );
+
+            $db->commit();
+
+            adminResponse(
+                true,
+                'Admin token refreshed',
+                [
+                    'user_id' => $adminId,
+                    'role' => 'admin',
+                    ...$tokens
+                ]
+            );
+
+        // ====================================================
+        // ADMIN LOGOUT
+        // ====================================================
+
+        case 'logout':
+
+            $refreshToken = trim(
+                (string) (
+                    $data['refresh_token'] ?? ''
+                )
+            );
+
+            if ($refreshToken === '') {
+                adminResponse(
+                    false,
+                    'Refresh token required',
+                    [],
+                    422
+                );
+            }
+
+            $claims = verifyAdminToken(
+                $refreshToken,
+                'refresh'
+            );
+
+            $adminId = (int) (
+                $claims->user_id ??
+                $claims->sub
+            );
+
+            $refreshHash = hash(
+                'sha256',
+                $refreshToken
+            );
+
+            $db->begin_transaction();
+
+            $stmt = $db->prepare(
+                'SELECT id
+                 FROM admin_refresh_tokens
+                 WHERE admin_id = ?
+                   AND token_hash = ?
+                   AND revoked_at IS NULL
+                 FOR UPDATE'
+            );
+
+            $stmt->bind_param(
+                'is',
+                $adminId,
+                $refreshHash
+            );
+
+            $stmt->execute();
+
+            $storedToken = $stmt
+                ->get_result()
+                ->fetch_assoc();
+
+            $stmt->close();
+
+            if (!$storedToken) {
+                $db->rollback();
+
+                adminResponse(
+                    false,
+                    'Invalid or revoked refresh token',
+                    [],
+                    401
+                );
+            }
+
+            $storedId = (int) $storedToken['id'];
+
+            $stmt = $db->prepare(
+                'UPDATE admin_refresh_tokens
+                 SET revoked_at = UTC_TIMESTAMP()
+                 WHERE id = ?'
+            );
+
+            $stmt->bind_param(
+                'i',
+                $storedId
+            );
+
+            $stmt->execute();
+            $stmt->close();
+
+            $db->commit();
+
+            adminResponse(
+                true,
+                'Admin logged out successfully'
+            );
     }
+
+} catch (mysqli_sql_exception $e) {
+
+    if (isset($db)) {
+        try {
+            $db->rollback();
+        } catch (Throwable $ignored) {
+        }
+    }
+
+    error_log(
+        'Sporto Admin DB Error: ' .
+        $e->getMessage()
+    );
+
+    adminResponse(
+        false,
+        'Admin database request failed',
+        [],
+        500
+    );
 
 } catch (Throwable $e) {
-    sendResponse(
-        false,
-        "Database connection failed",
-        [
-            "error" => $e->getMessage(),
-        ],
-        500
+
+    if (isset($db)) {
+        try {
+            $db->rollback();
+        } catch (Throwable $ignored) {
+        }
+    }
+
+    error_log(
+        'Sporto Admin Auth Error: ' .
+        $e->getMessage()
     );
-}
 
-$con->set_charset("utf8mb4");
-
-// ======================================================
-// FIND THE SINGLE ADMIN RECORD
-// ======================================================
-//
-// Login credentials are NOT read from password column.
-// Username is used to locate the admin row so we can get
-// the admin ID and save the JWT token.
-// ======================================================
-$stmt = $con->prepare(
-    "SELECT
-        id,
-        username
-     FROM adminreg_tb
-     WHERE username = ?
-     LIMIT 1"
-);
-
-if (!$stmt) {
-    $con->close();
-
-    sendResponse(
+    adminResponse(
         false,
-        "Failed to prepare admin query",
-        [
-            "error" => $con->error,
-        ],
-        500
-    );
-}
-
-$stmt->bind_param(
-    "s",
-    $permanentUsername
-);
-
-if (!$stmt->execute()) {
-    $error = $stmt->error;
-
-    $stmt->close();
-    $con->close();
-
-    sendResponse(
-        false,
-        "Admin lookup failed",
-        [
-            "error" => $error,
-        ],
-        500
-    );
-}
-
-$result = $stmt->get_result();
-
-if ($result === false) {
-    $error = $stmt->error;
-
-    $stmt->close();
-    $con->close();
-
-    sendResponse(
-        false,
-        "Failed to read admin record",
-        [
-            "error" => $error,
-        ],
-        500
-    );
-}
-
-// ======================================================
-// ADMIN RECORD MUST EXIST
-// ======================================================
-if ($result->num_rows === 0) {
-    $stmt->close();
-    $con->close();
-
-    sendResponse(
-        false,
-        "Admin account is not configured in adminreg_tb",
+        'Admin authentication failed',
         [],
         500
     );
 }
-
-$admin = $result->fetch_assoc();
-
-$stmt->close();
-
-// ======================================================
-// ADMIN ID
-// ======================================================
-$adminId = (int) (
-    $admin["id"] ?? 0
-);
-
-if ($adminId <= 0) {
-    $con->close();
-
-    sendResponse(
-        false,
-        "Invalid admin account ID",
-        [],
-        500
-    );
-}
-
-$adminName = $permanentUsername;
-
-// ======================================================
-// CREATE JWT
-// ======================================================
-//
-// 30-day access token so reopening the app does not force
-// the admin to login again every 15 minutes.
-//
-// Logout on Flutter clears the local token.
-// ======================================================
-$issuedAt = time();
-
-$expiresAt = $issuedAt + (30 * 24 * 60 * 60);
-
-$accessToken = JWT::encode(
-    [
-        "iss" => "sporto-api",
-        "iat" => $issuedAt,
-        "exp" => $expiresAt,
-
-        "user_id" => $adminId,
-        "name" => $adminName,
-        "email" => $adminName,
-        "role" => "admin",
-        "type" => "access",
-    ],
-    $secretKey,
-    "HS256"
-);
-
-// ======================================================
-// SAVE TOKEN
-// ======================================================
-$updateStmt = $con->prepare(
-    "UPDATE adminreg_tb
-     SET token = ?
-     WHERE id = ?"
-);
-
-if (!$updateStmt) {
-    $con->close();
-
-    sendResponse(
-        false,
-        "Failed to prepare token update",
-        [
-            "error" => $con->error,
-        ],
-        500
-    );
-}
-
-$updateStmt->bind_param(
-    "si",
-    $accessToken,
-    $adminId
-);
-
-if (!$updateStmt->execute()) {
-    $error = $updateStmt->error;
-
-    $updateStmt->close();
-    $con->close();
-
-    sendResponse(
-        false,
-        "Failed to save admin token",
-        [
-            "error" => $error,
-        ],
-        500
-    );
-}
-
-$updateStmt->close();
-$con->close();
-
-// ======================================================
-// SUCCESS RESPONSE
-// ======================================================
-sendResponse(
-    true,
-    "Admin login successful",
-    [
-        "user_id" => $adminId,
-        "name" => $adminName,
-        "email" => $adminName,
-        "role" => "admin",
-        "access_token" => $accessToken,
-        "expires_in" => $expiresAt - $issuedAt,
-    ],
-    200
-);
