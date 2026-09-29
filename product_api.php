@@ -1,14 +1,241 @@
 <?php
 
-declare(strict_types=1);
+/*
+|--------------------------------------------------------------------------
+| SPORTO PRODUCT API
+|--------------------------------------------------------------------------
+| GET    -> user / owner / admin
+| POST   -> admin
+| PUT    -> admin
+| PATCH  -> admin
+| DELETE -> admin
+|--------------------------------------------------------------------------
+*/
 
 header("Content-Type: application/json; charset=UTF-8");
+header("Cache-Control: no-store, no-cache, must-revalidate");
+header("Pragma: no-cache");
+
 header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type, Authorization");
+header(
+    "Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS"
+);
+header(
+    "Access-Control-Allow-Headers: Content-Type, Authorization"
+);
+
+
+/*
+|--------------------------------------------------------------------------
+| GLOBAL RESPONSE FLAG
+|--------------------------------------------------------------------------
+*/
+
+$responseSent = false;
+
+
+/*
+|--------------------------------------------------------------------------
+| FORCE JSON RESPONSE FOR PHP ERRORS
+|--------------------------------------------------------------------------
+*/
+
+function sendJsonResponse(
+    $status,
+    $message,
+    $data = array(),
+    $code = 200
+) {
+    global $responseSent;
+
+    $responseSent = true;
+
+    http_response_code($code);
+
+    $payload = array(
+        "status" => (bool) $status,
+        "message" => (string) $message
+    );
+
+    if (is_array($data) && !empty($data)) {
+        foreach ($data as $key => $value) {
+            $payload[$key] = $value;
+        }
+    }
+
+    $json = json_encode(
+        $payload,
+        JSON_UNESCAPED_UNICODE |
+        JSON_UNESCAPED_SLASHES |
+        JSON_INVALID_UTF8_SUBSTITUTE
+    );
+
+    if ($json === false) {
+        $json = json_encode(
+            array(
+                "status" => false,
+                "message" => "Server could not create JSON response"
+            )
+        );
+    }
+
+    echo $json;
+
+    exit;
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| PHP WARNING / NOTICE HANDLER
+|--------------------------------------------------------------------------
+*/
+
+set_error_handler(
+    function (
+        $severity,
+        $message,
+        $file,
+        $line
+    ) {
+        if (!(error_reporting() & $severity)) {
+            return false;
+        }
+
+        sendJsonResponse(
+            false,
+            "Server error",
+            array(
+                "error" => $message
+            ),
+            500
+        );
+
+        return true;
+    }
+);
+
+
+/*
+|--------------------------------------------------------------------------
+| PHP EXCEPTION HANDLER
+|--------------------------------------------------------------------------
+*/
+
+set_exception_handler(
+    function ($exception) {
+
+        sendJsonResponse(
+            false,
+            "Server exception",
+            array(
+                "error" => $exception->getMessage()
+            ),
+            500
+        );
+    }
+);
+
+
+/*
+|--------------------------------------------------------------------------
+| FATAL ERROR HANDLER
+|--------------------------------------------------------------------------
+*/
+
+register_shutdown_function(
+    function () {
+
+        global $responseSent;
+
+        if ($responseSent) {
+            return;
+        }
+
+        $error = error_get_last();
+
+        if ($error === null) {
+            return;
+        }
+
+        $fatalTypes = array(
+            E_ERROR,
+            E_PARSE,
+            E_CORE_ERROR,
+            E_COMPILE_ERROR
+        );
+
+        if (in_array($error["type"], $fatalTypes, true)) {
+
+            http_response_code(500);
+
+            header(
+                "Content-Type: application/json; charset=UTF-8"
+            );
+
+            echo json_encode(
+                array(
+                    "status" => false,
+                    "message" => "Server fatal error",
+                    "error" => $error["message"]
+                ),
+                JSON_UNESCAPED_UNICODE |
+                JSON_UNESCAPED_SLASHES |
+                JSON_INVALID_UTF8_SUBSTITUTE
+            );
+        }
+    }
+);
+
+
+/*
+|--------------------------------------------------------------------------
+| CORS PREFLIGHT
+|--------------------------------------------------------------------------
+*/
+
+if (
+    isset($_SERVER["REQUEST_METHOD"]) &&
+    $_SERVER["REQUEST_METHOD"] === "OPTIONS"
+) {
+
+    http_response_code(200);
+
+    echo json_encode(
+        array(
+            "status" => true,
+            "message" => "OK"
+        ),
+        JSON_UNESCAPED_UNICODE
+    );
+
+    exit;
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| CONNECTION
+|--------------------------------------------------------------------------
+*/
 
 require_once __DIR__ . "/connection.php";
+
+
+/*
+|--------------------------------------------------------------------------
+| JWT CONFIG
+|--------------------------------------------------------------------------
+*/
+
 require_once __DIR__ . "/config/jwt.php";
+
+
+/*
+|--------------------------------------------------------------------------
+| JWT CLASSES
+|--------------------------------------------------------------------------
+*/
 
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
@@ -16,13 +243,35 @@ use Firebase\JWT\Key;
 
 /*
 |--------------------------------------------------------------------------
-| OPTIONS
+| DATABASE CHECK
 |--------------------------------------------------------------------------
 */
 
-if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
-    http_response_code(200);
-    exit;
+if (!isset($con) || !($con instanceof mysqli)) {
+
+    sendJsonResponse(
+        false,
+        "Database connection is not available",
+        array(),
+        500
+    );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| DATABASE CHARACTER SET
+|--------------------------------------------------------------------------
+*/
+
+if (!$con->set_charset("utf8mb4")) {
+
+    sendJsonResponse(
+        false,
+        "Failed to configure database connection",
+        array(),
+        500
+    );
 }
 
 
@@ -33,43 +282,47 @@ if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
 */
 
 function response(
-    bool $status,
-    string $message,
-    array $data = [],
-    int $code = 200
-): never {
+    $status,
+    $message,
+    $data = array(),
+    $code = 200
+) {
 
-    http_response_code($code);
-
-    echo json_encode(
-        [
-            "status" => $status,
-            "message" => $message,
-            ...$data
-        ],
-        JSON_UNESCAPED_UNICODE
+    sendJsonResponse(
+        $status,
+        $message,
+        $data,
+        $code
     );
-
-    exit;
 }
 
 
 /*
 |--------------------------------------------------------------------------
-| BEARER TOKEN
+| GET BEARER TOKEN
 |--------------------------------------------------------------------------
 */
 
-function getBearerToken(): ?string
+function getBearerToken()
 {
-    $headers = function_exists("getallheaders")
-        ? getallheaders()
-        : [];
+    $headers = array();
+
+    if (function_exists("getallheaders")) {
+        $headers = getallheaders();
+    }
 
     $authorization =
-        $headers["Authorization"]
-        ?? $headers["authorization"]
-        ?? ($_SERVER["HTTP_AUTHORIZATION"] ?? null);
+        isset($headers["Authorization"])
+            ? $headers["Authorization"]
+            : (
+                isset($headers["authorization"])
+                    ? $headers["authorization"]
+                    : (
+                        isset($_SERVER["HTTP_AUTHORIZATION"])
+                            ? $_SERVER["HTTP_AUTHORIZATION"]
+                            : null
+                    )
+            );
 
     if (
         !$authorization ||
@@ -79,6 +332,7 @@ function getBearerToken(): ?string
             $matches
         )
     ) {
+
         return null;
     }
 
@@ -92,9 +346,22 @@ function getBearerToken(): ?string
 |--------------------------------------------------------------------------
 */
 
-function authenticate(array $allowedRoles): array
+function authenticate($allowedRoles)
 {
     global $secret_key;
+
+    if (
+        !isset($secret_key) ||
+        trim((string) $secret_key) === ""
+    ) {
+
+        response(
+            false,
+            "JWT configuration is missing",
+            array(),
+            500
+        );
+    }
 
     $token = getBearerToken();
 
@@ -103,7 +370,7 @@ function authenticate(array $allowedRoles): array
         response(
             false,
             "Authorization token is required",
-            [],
+            array(),
             401
         );
     }
@@ -120,22 +387,26 @@ function authenticate(array $allowedRoles): array
 
         $payload = (array) $decoded;
 
-
+        /*
+        | Access token only
+        */
         if (
-            ($payload["type"] ?? "") !== "access"
+            !isset($payload["type"]) ||
+            $payload["type"] !== "access"
         ) {
 
             response(
                 false,
                 "Invalid access token",
-                [],
+                array(),
                 401
             );
         }
 
-
-        $role = $payload["role"] ?? "";
-
+        $role =
+            isset($payload["role"])
+                ? (string) $payload["role"]
+                : "";
 
         if (
             !in_array(
@@ -148,11 +419,10 @@ function authenticate(array $allowedRoles): array
             response(
                 false,
                 "You do not have permission for this action",
-                [],
+                array(),
                 403
             );
         }
-
 
         return $payload;
 
@@ -161,7 +431,7 @@ function authenticate(array $allowedRoles): array
         response(
             false,
             "Invalid or expired token",
-            [],
+            array(),
             401
         );
     }
@@ -174,38 +444,49 @@ function authenticate(array $allowedRoles): array
 |--------------------------------------------------------------------------
 */
 
-function inputData(): array
+function inputData()
 {
-    $raw = file_get_contents(
-        "php://input"
-    );
+    $raw = file_get_contents("php://input");
 
     if (
         $raw !== false &&
         trim($raw) !== ""
     ) {
 
-        $data = json_decode(
+        $decoded = json_decode(
             $raw,
             true
         );
 
-        if (is_array($data)) {
-            return $data;
+        if (
+            json_last_error() === JSON_ERROR_NONE &&
+            is_array($decoded)
+        ) {
+
+            return $decoded;
         }
     }
 
-    return $_POST;
+    if (isset($_POST) && is_array($_POST)) {
+        return $_POST;
+    }
+
+    return array();
 }
 
 
 /*
 |--------------------------------------------------------------------------
-| REQUEST
+| REQUEST METHOD
 |--------------------------------------------------------------------------
 */
 
-$method = $_SERVER["REQUEST_METHOD"];
+$method =
+    isset($_SERVER["REQUEST_METHOD"])
+        ? strtoupper(
+            $_SERVER["REQUEST_METHOD"]
+        )
+        : "GET";
 
 
 /*
@@ -213,22 +494,24 @@ $method = $_SERVER["REQUEST_METHOD"];
 | GET PRODUCTS
 |--------------------------------------------------------------------------
 |
-| USER / OWNER / ADMIN can view products.
+| user / owner / admin
 |
 */
 
 if ($method === "GET") {
 
-    authenticate([
-        "user",
-        "owner",
-        "admin"
-    ]);
-
-
-    $productId = (int) (
-        $_GET["product_id"] ?? 0
+    authenticate(
+        array(
+            "user",
+            "owner",
+            "admin"
+        )
     );
+
+    $productId =
+        isset($_GET["product_id"])
+            ? (int) $_GET["product_id"]
+            : 0;
 
 
     /*
@@ -254,24 +537,23 @@ if ($method === "GET") {
              LIMIT 1"
         );
 
-
         if (!$stmt) {
 
             response(
                 false,
                 "Database query failed",
-                [],
+                array(
+                    "error" => $con->error
+                ),
                 500
             );
         }
-
 
         $stmt->bind_param(
             "i",
             $productId
         );
     }
-
 
     /*
     |--------------------------------------------------------------------------
@@ -295,13 +577,14 @@ if ($method === "GET") {
              ORDER BY product_id DESC"
         );
 
-
         if (!$stmt) {
 
             response(
                 false,
                 "Database query failed",
-                [],
+                array(
+                    "error" => $con->error
+                ),
                 500
             );
         }
@@ -323,54 +606,86 @@ if ($method === "GET") {
         response(
             false,
             "Failed to fetch products",
-            [
+            array(
                 "error" => $error
-            ],
+            ),
             500
         );
     }
 
 
+    /*
+    |--------------------------------------------------------------------------
+    | RESULT
+    |--------------------------------------------------------------------------
+    */
+
     $result = $stmt->get_result();
 
-    $products = [];
+    if (!$result) {
+
+        $error = $stmt->error;
+
+        $stmt->close();
+
+        response(
+            false,
+            "Failed to read product results",
+            array(
+                "error" => $error
+            ),
+            500
+        );
+    }
 
 
-    while (
-        $row = $result->fetch_assoc()
-    ) {
+    $products = array();
 
-        $products[] = [
 
+    while ($row = $result->fetch_assoc()) {
+
+        $products[] = array(
             "product_id" => (int) $row["product_id"],
-
-            "name" => $row["name"],
-
-            "category" => $row["category"],
-
-            "price" => (float) $row["price"],
-
-            "stock" => (int) $row["stock"],
-
-            /*
-            | Cloudinary URL
-            */
-            "image" => $row["image"] ?: null,
-
-            "status" => $row["status"]
-        ];
+            "name" => isset($row["name"])
+                ? (string) $row["name"]
+                : "",
+            "category" => isset($row["category"])
+                ? (string) $row["category"]
+                : "",
+            "price" => isset($row["price"])
+                ? (float) $row["price"]
+                : 0,
+            "stock" => isset($row["stock"])
+                ? (int) $row["stock"]
+                : 0,
+            "image" =>
+                isset($row["image"]) &&
+                trim((string) $row["image"]) !== ""
+                    ? (string) $row["image"]
+                    : null,
+            "status" => isset($row["status"])
+                ? (string) $row["status"]
+                : ""
+        );
     }
 
 
     $stmt->close();
 
 
+    /*
+    |--------------------------------------------------------------------------
+    | SUCCESS
+    |--------------------------------------------------------------------------
+    */
+
     response(
         true,
         "Products fetched successfully",
-        [
+        array(
             "products" => $products
-        ]
+        ),
+        200
     );
 }
 
@@ -379,14 +694,18 @@ if ($method === "GET") {
 |--------------------------------------------------------------------------
 | ADMIN AUTHENTICATION
 |--------------------------------------------------------------------------
-|
-| Only admin can add/update/delete products.
-|
 */
 
-$user = authenticate([
-    "admin"
-]);
+$adminPayload = authenticate(
+    array("admin")
+);
+
+
+/*
+|--------------------------------------------------------------------------
+| REQUEST DATA
+|--------------------------------------------------------------------------
+*/
 
 $data = inputData();
 
@@ -399,51 +718,73 @@ $data = inputData();
 
 if ($method === "POST") {
 
-    $name = trim(
-        $data["name"] ?? ""
-    );
+    $name =
+        isset($data["name"])
+            ? trim((string) $data["name"])
+            : "";
 
-    $category = trim(
-        $data["category"] ?? ""
-    );
+    $category =
+        isset($data["category"])
+            ? trim((string) $data["category"])
+            : "";
 
-    $price = (float) (
-        $data["price"] ?? 0
-    );
+    $price =
+        isset($data["price"])
+            ? (float) $data["price"]
+            : 0;
 
-    $stock = (int) (
-        $data["stock"] ?? 0
-    );
+    $stock =
+        isset($data["stock"])
+            ? (int) $data["stock"]
+            : 0;
 
-    /*
-    | Cloudinary secure_url
-    */
-    $image = trim(
-        $data["image"] ?? ""
-    );
+    $image =
+        isset($data["image"])
+            ? trim((string) $data["image"])
+            : "";
 
-    $status = trim(
-        $data["status"] ?? "active"
-    );
+    $status =
+        isset($data["status"])
+            ? trim((string) $data["status"])
+            : "available";
 
 
-    /*
-    |--------------------------------------------------------------------------
-    | VALIDATION
-    |--------------------------------------------------------------------------
-    */
-
-    if (
-        $name === "" ||
-        $category === "" ||
-        $price <= 0 ||
-        $stock < 0
-    ) {
+    if ($name === "") {
 
         response(
             false,
-            "name, category, price and valid stock are required",
-            [],
+            "Product name is required",
+            array(),
+            422
+        );
+    }
+
+    if ($category === "") {
+
+        response(
+            false,
+            "Product category is required",
+            array(),
+            422
+        );
+    }
+
+    if ($price <= 0) {
+
+        response(
+            false,
+            "Price must be greater than 0",
+            array(),
+            422
+        );
+    }
+
+    if ($stock < 0) {
+
+        response(
+            false,
+            "Stock cannot be negative",
+            array(),
             422
         );
     }
@@ -474,7 +815,9 @@ if ($method === "POST") {
         response(
             false,
             "Failed to prepare product insert",
-            [],
+            array(
+                "error" => $con->error
+            ),
             500
         );
     }
@@ -500,15 +843,17 @@ if ($method === "POST") {
         response(
             false,
             "Failed to add product",
-            [
+            array(
                 "error" => $error
-            ],
+            ),
             500
         );
     }
 
 
-    $productId = $stmt->insert_id;
+    $newProductId =
+        (int) $stmt->insert_id;
+
 
     $stmt->close();
 
@@ -516,12 +861,13 @@ if ($method === "POST") {
     response(
         true,
         "Product added successfully",
-        [
-            "product_id" => $productId,
-            "image" => $image !== ""
-                ? $image
-                : null
-        ],
+        array(
+            "product_id" => $newProductId,
+            "image" =>
+                $image !== ""
+                    ? $image
+                    : null
+        ),
         201
     );
 }
@@ -538,9 +884,10 @@ if (
     $method === "PATCH"
 ) {
 
-    $productId = (int) (
-        $data["product_id"] ?? 0
-    );
+    $productId =
+        isset($data["product_id"])
+            ? (int) $data["product_id"]
+            : 0;
 
 
     if ($productId <= 0) {
@@ -548,21 +895,21 @@ if (
         response(
             false,
             "product_id is required",
-            [],
+            array(),
             422
         );
     }
 
 
-    $fields = [];
-
+    $fields = array();
     $types = "";
-
-    $values = [];
+    $values = array();
 
 
     /*
+    |--------------------------------------------------------------------------
     | NAME
+    |--------------------------------------------------------------------------
     */
 
     if (
@@ -572,18 +919,31 @@ if (
         )
     ) {
 
+        $name =
+            trim(
+                (string) $data["name"]
+            );
+
+        if ($name === "") {
+
+            response(
+                false,
+                "Product name cannot be empty",
+                array(),
+                422
+            );
+        }
+
         $fields[] = "name = ?";
-
         $types .= "s";
-
-        $values[] = trim(
-            (string) $data["name"]
-        );
+        $values[] = $name;
     }
 
 
     /*
+    |--------------------------------------------------------------------------
     | CATEGORY
+    |--------------------------------------------------------------------------
     */
 
     if (
@@ -593,18 +953,31 @@ if (
         )
     ) {
 
+        $category =
+            trim(
+                (string) $data["category"]
+            );
+
+        if ($category === "") {
+
+            response(
+                false,
+                "Product category cannot be empty",
+                array(),
+                422
+            );
+        }
+
         $fields[] = "category = ?";
-
         $types .= "s";
-
-        $values[] = trim(
-            (string) $data["category"]
-        );
+        $values[] = $category;
     }
 
 
     /*
+    |--------------------------------------------------------------------------
     | PRICE
+    |--------------------------------------------------------------------------
     */
 
     if (
@@ -614,30 +987,29 @@ if (
         )
     ) {
 
-        $price = (float) $data["price"];
-
+        $price =
+            (float) $data["price"];
 
         if ($price <= 0) {
 
             response(
                 false,
                 "Price must be greater than 0",
-                [],
+                array(),
                 422
             );
         }
 
-
         $fields[] = "price = ?";
-
         $types .= "d";
-
         $values[] = $price;
     }
 
 
     /*
+    |--------------------------------------------------------------------------
     | STOCK
+    |--------------------------------------------------------------------------
     */
 
     if (
@@ -647,32 +1019,29 @@ if (
         )
     ) {
 
-        $stock = (int) $data["stock"];
-
+        $stock =
+            (int) $data["stock"];
 
         if ($stock < 0) {
 
             response(
                 false,
                 "Stock cannot be negative",
-                [],
+                array(),
                 422
             );
         }
 
-
         $fields[] = "stock = ?";
-
         $types .= "i";
-
         $values[] = $stock;
     }
 
 
     /*
-    | PRODUCT IMAGE
     |--------------------------------------------------------------------------
-    | Cloudinary secure_url is stored here.
+    | IMAGE
+    |--------------------------------------------------------------------------
     */
 
     if (
@@ -682,20 +1051,21 @@ if (
         )
     ) {
 
-        $image = trim(
-            (string) $data["image"]
-        );
+        $image =
+            trim(
+                (string) $data["image"]
+            );
 
         $fields[] = "image = ?";
-
         $types .= "s";
-
         $values[] = $image;
     }
 
 
     /*
+    |--------------------------------------------------------------------------
     | STATUS
+    |--------------------------------------------------------------------------
     */
 
     if (
@@ -705,30 +1075,39 @@ if (
         )
     ) {
 
-        $status = trim(
-            (string) $data["status"]
-        );
+        $status =
+            trim(
+                (string) $data["status"]
+            );
+
+        if ($status === "") {
+
+            response(
+                false,
+                "Product status cannot be empty",
+                array(),
+                422
+            );
+        }
 
         $fields[] = "status = ?";
-
         $types .= "s";
-
         $values[] = $status;
     }
 
 
     /*
     |--------------------------------------------------------------------------
-    | NO FIELDS
+    | NOTHING TO UPDATE
     |--------------------------------------------------------------------------
     */
 
-    if ($fields === []) {
+    if (empty($fields)) {
 
         response(
             false,
             "No fields to update",
-            [],
+            array(),
             422
         );
     }
@@ -736,28 +1115,21 @@ if (
 
     /*
     |--------------------------------------------------------------------------
-    | UPDATE QUERY
+    | BUILD QUERY
     |--------------------------------------------------------------------------
     */
 
     $sql =
-        "UPDATE products
-         SET "
-        . implode(
-            ", ",
-            $fields
-        )
-        . " WHERE product_id = ?";
+        "UPDATE products SET " .
+        implode(", ", $fields) .
+        " WHERE product_id = ?";
 
 
     $types .= "i";
-
     $values[] = $productId;
 
 
-    $stmt = $con->prepare(
-        $sql
-    );
+    $stmt = $con->prepare($sql);
 
 
     if (!$stmt) {
@@ -765,19 +1137,55 @@ if (
         response(
             false,
             "Failed to prepare product update",
-            [
+            array(
                 "error" => $con->error
-            ],
+            ),
             500
         );
     }
 
 
-    $stmt->bind_param(
-        $types,
-        ...$values
-    );
+    /*
+    |--------------------------------------------------------------------------
+    | DYNAMIC BIND
+    |--------------------------------------------------------------------------
+    */
 
+    $bindParams = array();
+    $bindParams[] = $types;
+
+    foreach ($values as $key => $value) {
+
+        $bindParams[] = &$values[$key];
+    }
+
+
+    if (
+        !call_user_func_array(
+            array(
+                $stmt,
+                "bind_param"
+            ),
+            $bindParams
+        )
+    ) {
+
+        $stmt->close();
+
+        response(
+            false,
+            "Failed to bind update parameters",
+            array(),
+            500
+        );
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | EXECUTE
+    |--------------------------------------------------------------------------
+    */
 
     if (!$stmt->execute()) {
 
@@ -788,20 +1196,43 @@ if (
         response(
             false,
             "Failed to update product",
-            [
+            array(
                 "error" => $error
-            ],
+            ),
             500
         );
     }
 
 
+    $affectedRows =
+        $stmt->affected_rows;
+
+
     $stmt->close();
+
+
+    if ($affectedRows === 0) {
+
+        response(
+            true,
+            "Product updated successfully",
+            array(
+                "product_id" => $productId,
+                "changed" => false
+            ),
+            200
+        );
+    }
 
 
     response(
         true,
-        "Product updated successfully"
+        "Product updated successfully",
+        array(
+            "product_id" => $productId,
+            "changed" => true
+        ),
+        200
     );
 }
 
@@ -814,11 +1245,14 @@ if (
 
 if ($method === "DELETE") {
 
-    $productId = (int) (
-        $data["product_id"]
-        ?? $_GET["product_id"]
-        ?? 0
-    );
+    $productId =
+        isset($data["product_id"])
+            ? (int) $data["product_id"]
+            : (
+                isset($_GET["product_id"])
+                    ? (int) $_GET["product_id"]
+                    : 0
+            );
 
 
     if ($productId <= 0) {
@@ -826,7 +1260,7 @@ if ($method === "DELETE") {
         response(
             false,
             "product_id is required",
-            [],
+            array(),
             422
         );
     }
@@ -851,7 +1285,9 @@ if ($method === "DELETE") {
         response(
             false,
             "Failed to prepare product delete",
-            [],
+            array(
+                "error" => $con->error
+            ),
             500
         );
     }
@@ -872,24 +1308,22 @@ if ($method === "DELETE") {
         response(
             false,
             "Failed to delete product",
-            [
+            array(
                 "error" => $error
-            ],
+            ),
             500
         );
     }
 
 
-    if (
-        $stmt->affected_rows === 0
-    ) {
+    if ($stmt->affected_rows === 0) {
 
         $stmt->close();
 
         response(
             false,
             "Product not found",
-            [],
+            array(),
             404
         );
     }
@@ -900,21 +1334,25 @@ if ($method === "DELETE") {
 
     response(
         true,
-        "Product deleted successfully"
+        "Product deleted successfully",
+        array(
+            "product_id" => $productId
+        ),
+        200
     );
 }
 
 
 /*
 |--------------------------------------------------------------------------
-| UNSUPPORTED METHOD
+| UNSUPPORTED REQUEST
 |--------------------------------------------------------------------------
 */
 
 response(
     false,
     "Unsupported request method",
-    [],
+    array(),
     405
 );
 
