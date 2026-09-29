@@ -2,12 +2,6 @@
 
 // ============================================================
 // SPORTO - TURF API
-// Owner / Admin
-// GET    -> User / Owner / Admin
-// POST   -> Owner / Admin
-// PUT    -> Owner / Admin
-// PATCH  -> Owner / Admin
-// DELETE -> Owner / Admin
 // ============================================================
 
 header("Content-Type: application/json; charset=UTF-8");
@@ -29,10 +23,14 @@ if (
 
 // ============================================================
 // REQUIRED FILES
+// IMPORTANT: Render root structure
+// /var/www/html/connection.php
+// /var/www/html/config/jwt.php
+// /var/www/html/turf_api.php
 // ============================================================
 
-require_once "../connection.php";
-require_once "../config/jwt.php";
+require_once __DIR__ . "/connection.php";
+require_once __DIR__ . "/config/jwt.php";
 
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
@@ -137,17 +135,19 @@ function authenticate(
 
     try {
 
-        $decoded = JWT::decode(
-            $token,
-            new Key(
-                $secret_key,
-                "HS256"
-            )
-        );
+        $decoded =
+            JWT::decode(
+                $token,
+                new Key(
+                    $secret_key,
+                    "HS256"
+                )
+            );
 
-        $payload = (array) $decoded;
+        $payload =
+            (array) $decoded;
 
-        // Only access token allowed
+        // Access token only
         if (
             ($payload["type"] ?? "")
             !== "access"
@@ -161,11 +161,12 @@ function authenticate(
             );
         }
 
-        $role = strtolower(
-            (string) (
-                $payload["role"] ?? ""
-            )
-        );
+        $role =
+            strtolower(
+                (string) (
+                    $payload["role"] ?? ""
+                )
+            );
 
         if (
             $allowedRoles !== [] &&
@@ -184,7 +185,8 @@ function authenticate(
             );
         }
 
-        $payload["role"] = $role;
+        $payload["role"] =
+            $role;
 
         return $payload;
 
@@ -205,9 +207,10 @@ function authenticate(
 
 function inputData(): array
 {
-    $raw = file_get_contents(
-        "php://input"
-    );
+    $raw =
+        file_get_contents(
+            "php://input"
+        );
 
     if (
         $raw !== false &&
@@ -223,6 +226,7 @@ function inputData(): array
         if (
             is_array($decoded)
         ) {
+
             return $decoded;
         }
     }
@@ -262,7 +266,7 @@ if (
 $con->set_charset("utf8mb4");
 
 // ============================================================
-// TURF FORMATTER
+// FORMAT TURF
 // ============================================================
 
 function formatTurf(
@@ -304,8 +308,11 @@ function formatTurf(
             if (
                 is_array($decoded)
             ) {
+
                 $facilities =
-                    array_values($decoded);
+                    array_values(
+                        $decoded
+                    );
             }
         }
     }
@@ -326,63 +333,69 @@ function formatTurf(
     }
 
     return [
-        "turf_id" => (int) (
-            $row["turf_id"] ?? 0
-        ),
+        "turf_id" =>
+            (int) (
+                $row["turf_id"] ?? 0
+            ),
 
-        "owner_id" => (int) (
-            $row["owner_id"] ?? 0
-        ),
+        "owner_id" =>
+            (int) (
+                $row["owner_id"] ?? 0
+            ),
 
-        "turf_name" => (string) (
-            $row["turf_name"] ?? ""
-        ),
+        "turf_name" =>
+            (string) (
+                $row["turf_name"] ?? ""
+            ),
 
-        "location" => (string) (
-            $row["location"] ?? ""
-        ),
+        "location" =>
+            (string) (
+                $row["location"] ?? ""
+            ),
 
-        "price" => (float) (
-            $row["price"] ?? 0
-        ),
+        "price" =>
+            (float) (
+                $row["price"] ?? 0
+            ),
 
-        "status" => (string) (
-            $row["status"] ?? ""
-        ),
+        "status" =>
+            (string) (
+                $row["status"] ?? ""
+            ),
 
-        "description" => (string) (
-            $row["description"] ?? ""
-        ),
+        "description" =>
+            (string) (
+                $row["description"] ?? ""
+            ),
 
-        "facilities" => $facilities,
+        "facilities" =>
+            $facilities,
 
         "opening_time" =>
-            $row["opening_time"]
-            ?? null,
+            $row["opening_time"] ?? null,
 
         "closing_time" =>
-            $row["closing_time"]
-            ?? null,
+            $row["closing_time"] ?? null,
 
         "slot_duration_minutes" =>
             isset(
                 $row["slot_duration_minutes"]
             )
-            ? (int) $row["slot_duration_minutes"]
-            : null,
+                ? (int) $row["slot_duration_minutes"]
+                : null,
 
         "slot_price" =>
             isset(
                 $row["slot_price"]
             )
-            ? (float) $row["slot_price"]
-            : null,
+                ? (float) $row["slot_price"]
+                : null,
 
-        // Cover image
-        "image" => $imageUrl,
+        "image" =>
+            $imageUrl,
 
-        // Compatibility with Flutter model
-        "image_url" => $imageUrl,
+        "image_url" =>
+            $imageUrl,
     ];
 }
 
@@ -397,8 +410,7 @@ $method =
     );
 
 // ============================================================
-// GET TURFS
-// User / Owner / Admin
+// GET
 // ============================================================
 
 if ($method === "GET") {
@@ -422,39 +434,43 @@ if ($method === "GET") {
 
     if ($turfId > 0) {
 
-        $stmt = $con->prepare(
-            "
-            SELECT
-                t.turf_id,
-                t.owner_id,
-                t.turf_name,
-                t.location,
-                t.price,
-                t.status,
-                t.description,
-                t.facilities,
-                t.opening_time,
-                t.closing_time,
-                t.slot_duration_minutes,
-                t.slot_price,
+        $stmt =
+            $con->prepare(
+                "
+                SELECT
+                    t.turf_id,
+                    t.owner_id,
+                    t.turf_name,
+                    t.location,
+                    t.price,
+                    t.status,
+                    t.description,
+                    t.facilities,
+                    t.opening_time,
+                    t.closing_time,
+                    t.slot_duration_minutes,
+                    t.slot_price,
 
-                (
-                    SELECT ti.image_url
-                    FROM turf_images ti
-                    WHERE ti.turf_id = t.turf_id
-                    ORDER BY
-                        ti.is_cover DESC,
-                        ti.image_id ASC
-                    LIMIT 1
-                ) AS image
+                    (
+                        SELECT
+                            ti.image_url
+                        FROM turf_images ti
+                        WHERE
+                            ti.turf_id = t.turf_id
+                        ORDER BY
+                            ti.is_cover DESC,
+                            ti.image_id ASC
+                        LIMIT 1
+                    ) AS image
 
-            FROM turf_tb t
+                FROM turf_tb t
 
-            WHERE t.turf_id = ?
+                WHERE
+                    t.turf_id = ?
 
-            LIMIT 1
-            "
-        );
+                LIMIT 1
+                "
+            );
 
         if (!$stmt) {
 
@@ -462,7 +478,8 @@ if ($method === "GET") {
                 false,
                 "Database query failed",
                 [
-                    "error" => $con->error,
+                    "error" =>
+                        $con->error,
                 ],
                 500
             );
@@ -479,40 +496,44 @@ if ($method === "GET") {
 
     } else {
 
-        $stmt = $con->prepare(
-            "
-            SELECT
-                t.turf_id,
-                t.owner_id,
-                t.turf_name,
-                t.location,
-                t.price,
-                t.status,
-                t.description,
-                t.facilities,
-                t.opening_time,
-                t.closing_time,
-                t.slot_duration_minutes,
-                t.slot_price,
+        $stmt =
+            $con->prepare(
+                "
+                SELECT
+                    t.turf_id,
+                    t.owner_id,
+                    t.turf_name,
+                    t.location,
+                    t.price,
+                    t.status,
+                    t.description,
+                    t.facilities,
+                    t.opening_time,
+                    t.closing_time,
+                    t.slot_duration_minutes,
+                    t.slot_price,
 
-                (
-                    SELECT ti.image_url
-                    FROM turf_images ti
-                    WHERE ti.turf_id = t.turf_id
-                    ORDER BY
-                        ti.is_cover DESC,
-                        ti.image_id ASC
-                    LIMIT 1
-                ) AS image
+                    (
+                        SELECT
+                            ti.image_url
+                        FROM turf_images ti
+                        WHERE
+                            ti.turf_id = t.turf_id
+                        ORDER BY
+                            ti.is_cover DESC,
+                            ti.image_id ASC
+                        LIMIT 1
+                    ) AS image
 
-            FROM turf_tb t
+                FROM turf_tb t
 
-            WHERE t.status != 'deleted'
+                WHERE
+                    t.status != 'deleted'
 
-            ORDER BY
-                t.turf_id DESC
-            "
-        );
+                ORDER BY
+                    t.turf_id DESC
+                "
+            );
 
         if (!$stmt) {
 
@@ -520,7 +541,8 @@ if ($method === "GET") {
                 false,
                 "Database query failed",
                 [
-                    "error" => $con->error,
+                    "error" =>
+                        $con->error,
                 ],
                 500
             );
@@ -531,7 +553,9 @@ if ($method === "GET") {
     // EXECUTE
     // ========================================================
 
-    if (!$stmt->execute()) {
+    if (
+        !$stmt->execute()
+    ) {
 
         $error =
             $stmt->error;
@@ -542,7 +566,8 @@ if ($method === "GET") {
             false,
             "Failed to fetch turfs",
             [
-                "error" => $error,
+                "error" =>
+                    $error,
             ],
             500
         );
@@ -565,7 +590,7 @@ if ($method === "GET") {
     $stmt->close();
 
     // ========================================================
-    // SINGLE TURF RESPONSE
+    // SINGLE TURF
     // ========================================================
 
     if ($turfId > 0) {
@@ -589,8 +614,12 @@ if ($method === "GET") {
             true,
             "Turf fetched successfully",
             [
-                "turf" => $turf,
-                "data" => $turf,
+                "turf" =>
+                    $turf,
+
+                "data" =>
+                    $turf,
+
                 "turfs" => [
                     $turf,
                 ],
@@ -599,20 +628,21 @@ if ($method === "GET") {
     }
 
     // ========================================================
-    // ALL TURFS RESPONSE
+    // ALL TURFS
     // ========================================================
 
     response(
         true,
         "Turfs fetched successfully",
         [
-            "turfs" => $turfs,
+            "turfs" =>
+                $turfs,
         ]
     );
 }
 
 // ============================================================
-// OWNER / ADMIN AUTH FOR WRITE OPERATIONS
+// OWNER / ADMIN
 // ============================================================
 
 $user =
@@ -646,68 +676,77 @@ $data =
 
 if ($method === "POST") {
 
-    // ========================================================
+    // --------------------------------------------------------
     // BASIC FIELDS
-    // ========================================================
+    // --------------------------------------------------------
 
     $turfName =
         trim(
             (string) (
-                $data["turf_name"] ?? ""
+                $data["turf_name"]
+                ?? ""
             )
         );
 
     $location =
         trim(
             (string) (
-                $data["location"] ?? ""
+                $data["location"]
+                ?? ""
             )
         );
 
     $price =
         (float) (
-            $data["price"] ?? 0
+            $data["price"]
+            ?? 0
         );
 
-    // ========================================================
-    // OWNER ID
-    // ========================================================
+    // --------------------------------------------------------
+    // OWNER
+    // --------------------------------------------------------
 
     $ownerId =
         $role === "owner"
         ? $userId
         : (int) (
-            $data["owner_id"] ?? 0
+            $data["owner_id"]
+            ?? 0
         );
 
-    // ========================================================
-    // OPTIONAL FIELDS
-    // ========================================================
+    // --------------------------------------------------------
+    // OPTIONAL DETAILS
+    // --------------------------------------------------------
 
     $description =
         trim(
             (string) (
-                $data["description"] ?? ""
+                $data["description"]
+                ?? ""
             )
         );
 
     $openingTime =
         trim(
             (string) (
-                $data["opening_time"] ?? ""
+                $data["opening_time"]
+                ?? ""
             )
         );
 
     $closingTime =
         trim(
             (string) (
-                $data["closing_time"] ?? ""
+                $data["closing_time"]
+                ?? ""
             )
         );
 
     $slotDurationMinutes =
         (int) (
-            $data["slot_duration_minutes"]
+            $data[
+                "slot_duration_minutes"
+            ]
             ?? 0
         );
 
@@ -725,9 +764,9 @@ if ($method === "POST") {
             )
         );
 
-    // ========================================================
+    // --------------------------------------------------------
     // FACILITIES
-    // ========================================================
+    // --------------------------------------------------------
 
     $facilities =
         $data["facilities"]
@@ -751,12 +790,14 @@ if ($method === "POST") {
     if (
         $facilitiesJson === false
     ) {
-        $facilitiesJson = "[]";
+
+        $facilitiesJson =
+            "[]";
     }
 
-    // ========================================================
+    // --------------------------------------------------------
     // VALIDATION
-    // ========================================================
+    // --------------------------------------------------------
 
     if ($turfName === "") {
 
@@ -820,9 +861,9 @@ if ($method === "POST") {
         );
     }
 
-    // ========================================================
-    // STATUS VALIDATION
-    // ========================================================
+    // --------------------------------------------------------
+    // STATUS
+    // --------------------------------------------------------
 
     if (
         !in_array(
@@ -835,12 +876,14 @@ if ($method === "POST") {
             true
         )
     ) {
-        $status = "active";
+
+        $status =
+            "active";
     }
 
-    // ========================================================
-    // INSERT TURF
-    // ========================================================
+    // --------------------------------------------------------
+    // INSERT
+    // --------------------------------------------------------
 
     $stmt =
         $con->prepare(
@@ -882,7 +925,8 @@ if ($method === "POST") {
             false,
             "Failed to prepare turf insert",
             [
-                "error" => $con->error,
+                "error" =>
+                    $con->error,
             ],
             500
         );
@@ -903,7 +947,9 @@ if ($method === "POST") {
         $slotPrice
     );
 
-    if (!$stmt->execute()) {
+    if (
+        !$stmt->execute()
+    ) {
 
         $error =
             $stmt->error;
@@ -914,7 +960,8 @@ if ($method === "POST") {
             false,
             "Failed to add turf",
             [
-                "error" => $error,
+                "error" =>
+                    $error,
             ],
             500
         );
@@ -925,15 +972,12 @@ if ($method === "POST") {
 
     $stmt->close();
 
-    // ========================================================
-    // RESPONSE
-    // ========================================================
-
     response(
         true,
         "Turf added successfully",
         [
-            "turf_id" => $newId,
+            "turf_id" =>
+                $newId,
         ],
         201
     );
@@ -950,7 +994,8 @@ if (
 
     $turfId =
         (int) (
-            $data["turf_id"] ?? 0
+            $data["turf_id"]
+            ?? 0
         );
 
     if ($turfId <= 0) {
@@ -963,11 +1008,13 @@ if (
         );
     }
 
-    // ========================================================
+    // --------------------------------------------------------
     // OWNER OWNERSHIP
-    // ========================================================
+    // --------------------------------------------------------
 
-    if ($role === "owner") {
+    if (
+        $role === "owner"
+    ) {
 
         $check =
             $con->prepare(
@@ -985,9 +1032,7 @@ if (
             response(
                 false,
                 "Database query failed",
-                [
-                    "error" => $con->error,
-                ],
+                [],
                 500
             );
         }
@@ -998,7 +1043,9 @@ if (
             $userId
         );
 
-        if (!$check->execute()) {
+        if (
+            !$check->execute()
+        ) {
 
             $check->close();
 
@@ -1029,15 +1076,14 @@ if (
         $check->close();
     }
 
-    // ========================================================
-    // DYNAMIC UPDATE
-    // ========================================================
+    // --------------------------------------------------------
+    // UPDATE FIELDS
+    // --------------------------------------------------------
 
     $fields = [];
     $types = "";
     $values = [];
 
-    // Turf name
     if (
         array_key_exists(
             "turf_name",
@@ -1052,11 +1098,11 @@ if (
 
         $values[] =
             trim(
-                (string) $data["turf_name"]
+                (string)
+                    $data["turf_name"]
             );
     }
 
-    // Location
     if (
         array_key_exists(
             "location",
@@ -1071,11 +1117,11 @@ if (
 
         $values[] =
             trim(
-                (string) $data["location"]
+                (string)
+                    $data["location"]
             );
     }
 
-    // Price
     if (
         array_key_exists(
             "price",
@@ -1084,9 +1130,12 @@ if (
     ) {
 
         $newPrice =
-            (float) $data["price"];
+            (float)
+                $data["price"];
 
-        if ($newPrice <= 0) {
+        if (
+            $newPrice <= 0
+        ) {
 
             response(
                 false,
@@ -1105,7 +1154,6 @@ if (
             $newPrice;
     }
 
-    // Status
     if (
         array_key_exists(
             "status",
@@ -1115,7 +1163,8 @@ if (
 
         $newStatus =
             trim(
-                (string) $data["status"]
+                (string)
+                    $data["status"]
             );
 
         if (
@@ -1147,7 +1196,6 @@ if (
             $newStatus;
     }
 
-    // Description
     if (
         array_key_exists(
             "description",
@@ -1162,11 +1210,11 @@ if (
 
         $values[] =
             trim(
-                (string) $data["description"]
+                (string)
+                    $data["description"]
             );
     }
 
-    // Facilities
     if (
         array_key_exists(
             "facilities",
@@ -1197,7 +1245,9 @@ if (
         if (
             $newFacilitiesJson === false
         ) {
-            $newFacilitiesJson = "[]";
+
+            $newFacilitiesJson =
+                "[]";
         }
 
         $fields[] =
@@ -1209,7 +1259,6 @@ if (
             $newFacilitiesJson;
     }
 
-    // Opening time
     if (
         array_key_exists(
             "opening_time",
@@ -1224,11 +1273,11 @@ if (
 
         $values[] =
             trim(
-                (string) $data["opening_time"]
+                (string)
+                    $data["opening_time"]
             );
     }
 
-    // Closing time
     if (
         array_key_exists(
             "closing_time",
@@ -1243,11 +1292,11 @@ if (
 
         $values[] =
             trim(
-                (string) $data["closing_time"]
+                (string)
+                    $data["closing_time"]
             );
     }
 
-    // Slot duration
     if (
         array_key_exists(
             "slot_duration_minutes",
@@ -1256,11 +1305,14 @@ if (
     ) {
 
         $duration =
-            (int) $data[
-                "slot_duration_minutes"
-            ];
+            (int)
+                $data[
+                    "slot_duration_minutes"
+                ];
 
-        if ($duration <= 0) {
+        if (
+            $duration <= 0
+        ) {
 
             response(
                 false,
@@ -1279,7 +1331,6 @@ if (
             $duration;
     }
 
-    // Slot price
     if (
         array_key_exists(
             "slot_price",
@@ -1288,11 +1339,12 @@ if (
     ) {
 
         $newSlotPrice =
-            (float) $data[
-                "slot_price"
-            ];
+            (float)
+                $data["slot_price"];
 
-        if ($newSlotPrice <= 0) {
+        if (
+            $newSlotPrice <= 0
+        ) {
 
             response(
                 false,
@@ -1311,7 +1363,7 @@ if (
             $newSlotPrice;
     }
 
-    // Admin can change owner
+    // Admin owner change
     if (
         $role === "admin" &&
         array_key_exists(
@@ -1321,11 +1373,12 @@ if (
     ) {
 
         $newOwnerId =
-            (int) $data[
-                "owner_id"
-            ];
+            (int)
+                $data["owner_id"];
 
-        if ($newOwnerId <= 0) {
+        if (
+            $newOwnerId <= 0
+        ) {
 
             response(
                 false,
@@ -1344,10 +1397,6 @@ if (
             $newOwnerId;
     }
 
-    // ========================================================
-    // NO FIELDS
-    // ========================================================
-
     if (
         count($fields) === 0
     ) {
@@ -1360,9 +1409,9 @@ if (
         );
     }
 
-    // ========================================================
-    // BUILD UPDATE
-    // ========================================================
+    // --------------------------------------------------------
+    // BUILD SQL
+    // --------------------------------------------------------
 
     $sql =
         "UPDATE turf_tb SET "
@@ -1378,7 +1427,9 @@ if (
         $turfId;
 
     $stmt =
-        $con->prepare($sql);
+        $con->prepare(
+            $sql
+        );
 
     if (!$stmt) {
 
@@ -1386,16 +1437,14 @@ if (
             false,
             "Failed to prepare turf update",
             [
-                "error" => $con->error,
+                "error" =>
+                    $con->error,
             ],
             500
         );
     }
 
-    /*
-     * mysqli::bind_param needs references.
-     * Create a reference array safely.
-     */
+    // mysqli bind references
     $bindValues = [];
 
     $bindValues[] =
@@ -1404,6 +1453,7 @@ if (
     foreach (
         $values as $index => $value
     ) {
+
         $bindValues[] =
             &$values[$index];
     }
@@ -1422,13 +1472,15 @@ if (
 
         response(
             false,
-            "Failed to bind turf update values",
+            "Failed to bind update values",
             [],
             500
         );
     }
 
-    if (!$stmt->execute()) {
+    if (
+        !$stmt->execute()
+    ) {
 
         $error =
             $stmt->error;
@@ -1439,7 +1491,8 @@ if (
             false,
             "Failed to update turf",
             [
-                "error" => $error,
+                "error" =>
+                    $error,
             ],
             500
         );
@@ -1447,24 +1500,23 @@ if (
 
     $stmt->close();
 
-    // ========================================================
-    // RESPONSE
-    // ========================================================
-
     response(
         true,
         "Turf updated successfully",
         [
-            "turf_id" => $turfId,
+            "turf_id" =>
+                $turfId,
         ]
     );
 }
 
 // ============================================================
-// DELETE TURF
+// DELETE
 // ============================================================
 
-if ($method === "DELETE") {
+if (
+    $method === "DELETE"
+) {
 
     $turfId =
         (int) (
@@ -1483,11 +1535,13 @@ if ($method === "DELETE") {
         );
     }
 
-    // ========================================================
+    // --------------------------------------------------------
     // OWNER OWNERSHIP
-    // ========================================================
+    // --------------------------------------------------------
 
-    if ($role === "owner") {
+    if (
+        $role === "owner"
+    ) {
 
         $check =
             $con->prepare(
@@ -1505,9 +1559,7 @@ if ($method === "DELETE") {
             response(
                 false,
                 "Database query failed",
-                [
-                    "error" => $con->error,
-                ],
+                [],
                 500
             );
         }
@@ -1518,7 +1570,9 @@ if ($method === "DELETE") {
             $userId
         );
 
-        if (!$check->execute()) {
+        if (
+            !$check->execute()
+        ) {
 
             $check->close();
 
@@ -1549,9 +1603,9 @@ if ($method === "DELETE") {
         $check->close();
     }
 
-    // ========================================================
-    // BOOKING HISTORY CHECK
-    // ========================================================
+    // --------------------------------------------------------
+    // BOOKING HISTORY
+    // --------------------------------------------------------
 
     $bookingCheck =
         $con->prepare(
@@ -1568,7 +1622,8 @@ if ($method === "DELETE") {
             false,
             "Could not check turf bookings",
             [
-                "error" => $con->error,
+                "error" =>
+                    $con->error,
             ],
             500
         );
@@ -1579,7 +1634,9 @@ if ($method === "DELETE") {
         $turfId
     );
 
-    if (!$bookingCheck->execute()) {
+    if (
+        !$bookingCheck->execute()
+    ) {
 
         $error =
             $bookingCheck->error;
@@ -1588,9 +1645,10 @@ if ($method === "DELETE") {
 
         response(
             false,
-            "Failed to check turf booking history",
+            "Failed to check booking history",
             [
-                "error" => $error,
+                "error" =>
+                    $error,
             ],
             500
         );
@@ -1609,11 +1667,13 @@ if ($method === "DELETE") {
 
     $bookingCheck->close();
 
-    // ========================================================
-    // SOFT DELETE IF BOOKINGS EXIST
-    // ========================================================
+    // --------------------------------------------------------
+    // SOFT DELETE
+    // --------------------------------------------------------
 
-    if ($bookingCount > 0) {
+    if (
+        $bookingCount > 0
+    ) {
 
         $stmt =
             $con->prepare(
@@ -1639,7 +1699,9 @@ if ($method === "DELETE") {
             $turfId
         );
 
-        if (!$stmt->execute()) {
+        if (
+            !$stmt->execute()
+        ) {
 
             $error =
                 $stmt->error;
@@ -1650,7 +1712,8 @@ if ($method === "DELETE") {
                 false,
                 "Failed to mark turf as deleted",
                 [
-                    "error" => $error,
+                    "error" =>
+                        $error,
                 ],
                 500
             );
@@ -1662,14 +1725,15 @@ if ($method === "DELETE") {
             true,
             "Turf marked as deleted because booking history exists",
             [
-                "turf_id" => $turfId,
+                "turf_id" =>
+                    $turfId,
             ]
         );
     }
 
-    // ========================================================
-    // DELETE TURF SLOTS
-    // ========================================================
+    // --------------------------------------------------------
+    // DELETE SLOTS
+    // --------------------------------------------------------
 
     $deleteSlots =
         $con->prepare(
@@ -1691,9 +1755,9 @@ if ($method === "DELETE") {
         $deleteSlots->close();
     }
 
-    // ========================================================
-    // DELETE TURF IMAGES
-    // ========================================================
+    // --------------------------------------------------------
+    // DELETE IMAGES
+    // --------------------------------------------------------
 
     $deleteImages =
         $con->prepare(
@@ -1715,9 +1779,9 @@ if ($method === "DELETE") {
         $deleteImages->close();
     }
 
-    // ========================================================
-    // HARD DELETE TURF
-    // ========================================================
+    // --------------------------------------------------------
+    // DELETE TURF
+    // --------------------------------------------------------
 
     $stmt =
         $con->prepare(
@@ -1742,7 +1806,9 @@ if ($method === "DELETE") {
         $turfId
     );
 
-    if (!$stmt->execute()) {
+    if (
+        !$stmt->execute()
+    ) {
 
         $error =
             $stmt->error;
@@ -1753,7 +1819,8 @@ if ($method === "DELETE") {
             false,
             "Failed to delete turf",
             [
-                "error" => $error,
+                "error" =>
+                    $error,
             ],
             500
         );
@@ -1761,21 +1828,18 @@ if ($method === "DELETE") {
 
     $stmt->close();
 
-    // ========================================================
-    // RESPONSE
-    // ========================================================
-
     response(
         true,
         "Turf deleted successfully",
         [
-            "turf_id" => $turfId,
+            "turf_id" =>
+                $turfId,
         ]
     );
 }
 
 // ============================================================
-// UNSUPPORTED METHOD
+// UNSUPPORTED
 // ============================================================
 
 response(
