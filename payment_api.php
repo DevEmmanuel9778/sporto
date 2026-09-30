@@ -1,38 +1,15 @@
 <?php
 
-// ============================================================
-// ERROR HANDLING
-// ============================================================
-
-ini_set("display_errors", "0");
-ini_set("log_errors", "1");
-error_reporting(E_ALL);
-
-ob_start();
-
-// ============================================================
-// HEADERS
-// ============================================================
-
 header("Content-Type: application/json; charset=UTF-8");
 header("Cache-Control: no-store");
 header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: GET, POST, PUT, PATCH, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
-header("Access-Control-Max-Age: 86400");
+header("Access-Control-Allow-Methods: GET, POST, PUT, PATCH, OPTIONS");
 
-// ============================================================
-// OPTIONS
-// ============================================================
-
-if (($_SERVER["REQUEST_METHOD"] ?? "") === "OPTIONS") {
+if ($_SERVER["REQUEST_METHOD"] === "OPTIONS") {
     http_response_code(204);
     exit;
 }
-
-// ============================================================
-// REQUIRED FILES
-// ============================================================
 
 require_once __DIR__ . "/connection.php";
 require_once __DIR__ . "/config/jwt.php";
@@ -40,92 +17,48 @@ require_once __DIR__ . "/config/jwt.php";
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
 
-// ============================================================
-// RESPONSE
-// ============================================================
-
-function response(
-    bool $status,
-    string $message,
-    $data = null,
-    int $code = 200
-): void {
-    if (ob_get_level() > 0) {
-        ob_clean();
-    }
-
+function response(bool $status, string $message, $data = null, int $code = 200): void
+{
     http_response_code($code);
 
     $out = [
         "status" => $status,
-        "message" => $message,
+        "message" => $message
     ];
 
     if ($data !== null) {
         $out["data"] = $data;
     }
 
-    echo json_encode(
-        $out,
-        JSON_UNESCAPED_UNICODE |
-        JSON_UNESCAPED_SLASHES
-    );
-
+    echo json_encode($out);
     exit;
 }
 
-// ============================================================
-// GET BEARER TOKEN
-// ============================================================
-
-function getBearerToken(): ?string
+function inputData(): array
 {
-    $authorization = null;
+    $raw = file_get_contents("php://input");
 
-    if (function_exists("getallheaders")) {
-        $headers = getallheaders();
-
-        foreach ($headers as $key => $value) {
-            if (strtolower((string)$key) === "authorization") {
-                $authorization = (string)$value;
-                break;
-            }
-        }
+    if ($raw === false || trim($raw) === "") {
+        return [];
     }
 
-    if (!$authorization) {
-        $authorization =
-            $_SERVER["HTTP_AUTHORIZATION"]
-            ?? $_SERVER["REDIRECT_HTTP_AUTHORIZATION"]
-            ?? null;
-    }
+    $data = json_decode($raw, true);
 
-    if (
-        !$authorization ||
-        !preg_match(
-            "/^Bearer\s+(.+)$/i",
-            trim($authorization),
-            $matches
-        )
-    ) {
-        return null;
-    }
-
-    return trim($matches[1]);
+    return is_array($data) ? $data : [];
 }
 
-// ============================================================
-// AUTHENTICATION
-// ============================================================
-
-function auth(
-    array $allowedRoles = ["user", "owner", "admin"]
-): array {
+function authenticate(array $roles): array
+{
     global $secret_key;
 
-    $token = getBearerToken();
+    $header =
+        $_SERVER["HTTP_AUTHORIZATION"] ?? "";
 
-    if (!$token) {
+    if (!preg_match(
+        "/Bearer\s+(.+)/i",
+        $header,
+        $matches
+    )) {
         response(
             false,
             "Authorization token is required",
@@ -135,10 +68,14 @@ function auth(
     }
 
     try {
-        $payload = (array)JWT::decode(
-            $token,
-            new Key($secret_key, "HS256")
-        );
+        $payload =
+            (array)JWT::decode(
+                trim($matches[1]),
+                new Key(
+                    $secret_key,
+                    "HS256"
+                )
+            );
 
         if (($payload["type"] ?? "") !== "access") {
             response(
@@ -149,9 +86,18 @@ function auth(
             );
         }
 
-        $role = (string)($payload["role"] ?? "");
+        $role =
+            strtolower(
+                (string)(
+                    $payload["role"] ?? ""
+                )
+            );
 
-        if (!in_array($role, $allowedRoles, true)) {
+        if (!in_array(
+            $role,
+            $roles,
+            true
+        )) {
             response(
                 false,
                 "Access denied",
@@ -173,15 +119,24 @@ function auth(
     return [];
 }
 
-// ============================================================
-// DATABASE CHECK
-// ============================================================
+function money($value): float
+{
+    return round(
+        (float)$value,
+        2
+    );
+}
 
-if (
-    !isset($con) ||
-    !($con instanceof mysqli) ||
-    $con->connect_error
-) {
+function arraysEqualFloat(
+    float $a,
+    float $b
+): bool {
+    return abs($a - $b) < 0.01;
+}
+
+if (!isset($con) ||
+    $con->connect_error) {
+
     response(
         false,
         "Database connection failed",
@@ -190,79 +145,235 @@ if (
     );
 }
 
-// ============================================================
-// REQUEST DATA
-// ============================================================
+$method =
+    $_SERVER["REQUEST_METHOD"];
 
-$method = strtoupper(
-    $_SERVER["REQUEST_METHOD"] ?? ""
-);
+$payload =
+    authenticate([
+        "user",
+        "owner",
+        "admin"
+    ]);
 
-$user = auth();
-
-$role = (string)(
-    $user["role"] ??
-    ""
-);
-
-$userId = (int)(
-    $user["user_id"] ??
-    $user["id"] ??
-    0
-);
-
-$rawBody = file_get_contents("php://input");
-
-$data = [];
-
-if ($rawBody !== false && trim($rawBody) !== "") {
-    $decodedBody = json_decode(
-        $rawBody,
-        true
+$role =
+    strtolower(
+        (string)(
+            $payload["role"] ?? ""
+        )
     );
 
-    if (is_array($decodedBody)) {
-        $data = $decodedBody;
+$userId =
+    (int)(
+        $payload["user_id"] ??
+        $payload["id"] ??
+        0
+    );
+
+$data = inputData();
+
+/*
+|--------------------------------------------------------------------------
+| GET PAYMENT
+|--------------------------------------------------------------------------
+*/
+
+if ($method === "GET") {
+    $paymentId =
+        (int)(
+            $_GET["payment_id"] ?? 0
+        );
+
+    $bookingId =
+        (int)(
+            $_GET["booking_id"] ?? 0
+        );
+
+    $orderId =
+        (int)(
+            $_GET["order_id"] ?? 0
+        );
+
+    if ($role === "user") {
+
+        $where = [];
+        $params = [];
+        $types = "";
+
+        $where[] = "p.user_id = ?";
+        $params[] = $userId;
+        $types .= "i";
+
+        if ($paymentId > 0) {
+            $where[] = "p.payment_id = ?";
+            $params[] = $paymentId;
+            $types .= "i";
+        }
+
+        if ($bookingId > 0) {
+            $where[] = "p.booking_id = ?";
+            $params[] = $bookingId;
+            $types .= "i";
+        }
+
+        if ($orderId > 0) {
+            $where[] = "p.order_id = ?";
+            $params[] = $orderId;
+            $types .= "i";
+        }
+
+        $sql =
+            "SELECT
+                p.*
+             FROM payments p
+             WHERE " .
+            implode(
+                " AND ",
+                $where
+            ) .
+            " ORDER BY p.payment_id DESC";
+
+        $stmt =
+            $con->prepare($sql);
+
+        if (!$stmt) {
+            response(
+                false,
+                "Failed to prepare payment query",
+                null,
+                500
+            );
+        }
+
+        $stmt->bind_param(
+            $types,
+            ...$params
+        );
+    } elseif ($role === "owner") {
+
+        $stmt =
+            $con->prepare(
+                "SELECT p.*
+                 FROM payments p
+                 JOIN bookings b
+                   ON b.booking_id = p.booking_id
+                 JOIN turf_tb t
+                   ON t.turf_id = b.turf_id
+                 WHERE t.owner_id = ?
+                 ORDER BY p.payment_id DESC"
+            );
+
+        if (!$stmt) {
+            response(
+                false,
+                "Failed to prepare payment query",
+                null,
+                500
+            );
+        }
+
+        $stmt->bind_param(
+            "i",
+            $userId
+        );
+    } else {
+
+        $stmt =
+            $con->prepare(
+                "SELECT p.*
+                 FROM payments p
+                 ORDER BY p.payment_id DESC"
+            );
+
+        if (!$stmt) {
+            response(
+                false,
+                "Failed to prepare payment query",
+                null,
+                500
+            );
+        }
     }
+
+    $stmt->execute();
+
+    $result =
+        $stmt->get_result();
+
+    $payments = [];
+
+    while ($row =
+        $result->fetch_assoc()) {
+
+        $row["payment_id"] =
+            (int)$row["payment_id"];
+
+        if (isset(
+            $row["user_id"]
+        )) {
+            $row["user_id"] =
+                (int)$row["user_id"];
+        }
+
+        if (isset(
+            $row["booking_id"]
+        )) {
+            $row["booking_id"] =
+                (int)$row["booking_id"];
+        }
+
+        if (isset(
+            $row["order_id"]
+        )) {
+            $row["order_id"] =
+                (int)$row["order_id"];
+        }
+
+        $row["amount"] =
+            money(
+                $row["amount"]
+            );
+
+        $payments[] =
+            $row;
+    }
+
+    $stmt->close();
+
+    if (count($payments) === 0) {
+        response(
+            false,
+            "Payment not found",
+            null,
+            404
+        );
+    }
+
+    if ($paymentId > 0 ||
+        $bookingId > 0 ||
+        $orderId > 0) {
+
+        response(
+            true,
+            "Payment fetched successfully",
+            $payments[0]
+        );
+    }
+
+    response(
+        true,
+        "Payments fetched successfully",
+        $payments
+    );
 }
 
-// ============================================================
-// INTERNAL TRANSACTION REFERENCE
-// ============================================================
-
-function generateTransactionId(): string
-{
-    try {
-        return "SPT-" .
-            date("YmdHis") .
-            "-" .
-            strtoupper(
-                bin2hex(
-                    random_bytes(5)
-                )
-            );
-    } catch (Throwable $e) {
-        return "SPT-" .
-            date("YmdHis") .
-            "-" .
-            strtoupper(
-                substr(
-                    md5(
-                        uniqid(
-                            "",
-                            true
-                        )
-                    ),
-                    0,
-                    10
-                )
-            );
-    }
-}
-
-// ============================================================
-// POST - CREATE PAYMENT SESSION
-// ============================================================
+/*
+|--------------------------------------------------------------------------
+| POST
+|--------------------------------------------------------------------------
+| action=initiate
+| action=finalize
+|--------------------------------------------------------------------------
+*/
 
 if ($method === "POST") {
 
@@ -275,274 +386,417 @@ if ($method === "POST") {
         );
     }
 
-    $paymentType = strtolower(
-        trim(
-            (string)(
-                $data["payment_type"] ??
-                ""
+    $action =
+        strtolower(
+            trim(
+                (string)(
+                    $data["action"] ??
+                    "initiate"
+                )
             )
-        )
-    );
+        );
 
-    $paymentMethod = trim(
-        (string)(
-            $data["payment_method"] ??
-            ""
-        )
-    );
+    /*
+    |--------------------------------------------------------------------------
+    | INITIATE
+    |--------------------------------------------------------------------------
+    */
 
-    if (
-        !in_array(
+    if ($action === "initiate") {
+
+        $paymentType =
+            strtolower(
+                trim(
+                    (string)(
+                        $data["payment_type"] ??
+                        ""
+                    )
+                )
+            );
+
+        $paymentMethod =
+            trim(
+                (string)(
+                    $data["payment_method"] ??
+                    ""
+                )
+            );
+
+        $transactionId =
+            trim(
+                (string)(
+                    $data["transaction_id"] ??
+                    ""
+                )
+            );
+
+        $clientAmount =
+            money(
+                $data["amount"] ?? 0
+            );
+
+        if (!in_array(
             $paymentType,
             ["turf", "product"],
             true
-        )
-    ) {
-        response(
-            false,
-            "payment_type must be turf or product",
-            null,
-            422
-        );
-    }
-
-    if ($paymentMethod === "") {
-        response(
-            false,
-            "payment_method is required",
-            null,
-            422
-        );
-    }
-
-    $con->begin_transaction();
-
-    try {
-
-        // ========================================================
-        // TURF PAYMENT
-        // ========================================================
-
-        if ($paymentType === "turf") {
-
-            $bookingId = (int)(
-                $data["booking_id"] ??
-                0
+        )) {
+            response(
+                false,
+                "payment_type must be turf or product",
+                null,
+                422
             );
+        }
 
-            if ($bookingId <= 0) {
-                throw new Exception(
-                    "booking_id is required"
-                );
-            }
-
-            $stmt = $con->prepare(
-                "SELECT
-                    b.booking_id,
-                    b.user_id,
-                    b.turf_id,
-                    b.slot_id,
-                    b.booking_date,
-                    b.amount,
-                    b.status,
-                    t.turf_name,
-                    t.location,
-                    ts.start_time,
-                    ts.end_time
-                 FROM bookings b
-                 INNER JOIN turf_tb t
-                    ON t.turf_id = b.turf_id
-                 INNER JOIN turf_slots ts
-                    ON ts.slot_id = b.slot_id
-                 WHERE b.booking_id = ?
-                   AND b.user_id = ?
-                 LIMIT 1
-                 FOR UPDATE"
+        if ($paymentMethod === "") {
+            response(
+                false,
+                "payment_method is required",
+                null,
+                422
             );
+        }
 
-            if (!$stmt) {
-                throw new Exception(
-                    $con->error
-                );
-            }
-
-            $stmt->bind_param(
-                "ii",
-                $bookingId,
-                $userId
+        if ($transactionId === "") {
+            response(
+                false,
+                "transaction_id is required",
+                null,
+                422
             );
+        }
 
-            if (!$stmt->execute()) {
-                throw new Exception(
-                    $stmt->error
-                );
-            }
-
-            $result = $stmt->get_result();
-
-            if ($result->num_rows === 0) {
-                $stmt->close();
-
-                throw new Exception(
-                    "Booking not found"
-                );
-            }
-
-            $booking = $result->fetch_assoc();
-
-            $stmt->close();
-
-            $bookingStatus = strtolower(
-                trim(
-                    (string)$booking["status"]
-                )
+        if ($clientAmount <= 0) {
+            response(
+                false,
+                "Invalid payment amount",
+                null,
+                422
             );
+        }
 
-            if (
-                in_array(
-                    $bookingStatus,
-                    [
-                        "paid",
-                        "completed",
-                    ],
-                    true
-                )
-            ) {
-                throw new Exception(
-                    "Booking is already paid"
-                );
-            }
+        /*
+        Prevent duplicate transaction references.
+        */
 
-            // ----------------------------------------------------
-            // CHECK EXISTING PENDING PAYMENT
-            // ----------------------------------------------------
-
-            $existing = $con->prepare(
-                "SELECT
-                    payment_id,
-                    transaction_id,
-                    amount,
-                    payment_method,
-                    status,
-                    payment_date
+        $duplicate =
+            $con->prepare(
+                "SELECT payment_id
                  FROM payments
-                 WHERE booking_id = ?
-                   AND payment_type = 'turf'
-                   AND status = 'pending'
-                 ORDER BY payment_id DESC
+                 WHERE transaction_id = ?
                  LIMIT 1"
             );
 
-            if (!$existing) {
-                throw new Exception(
-                    $con->error
-                );
-            }
-
-            $existing->bind_param(
-                "i",
-                $bookingId
+        if ($duplicate) {
+            $duplicate->bind_param(
+                "s",
+                $transactionId
             );
 
-            if (!$existing->execute()) {
-                throw new Exception(
-                    $existing->error
-                );
-            }
+            $duplicate->execute();
 
-            $existingResult =
-                $existing->get_result();
+            $duplicateResult =
+                $duplicate->get_result();
 
-            if ($existingResult->num_rows > 0) {
+            if ($duplicateResult->num_rows > 0) {
+                $existing =
+                    $duplicateResult->fetch_assoc();
 
-                $existingPayment =
-                    $existingResult->fetch_assoc();
-
-                $existing->close();
-
-                $con->commit();
+                $duplicate->close();
 
                 response(
                     true,
-                    "Pending turf payment already exists",
+                    "Payment already initiated",
                     [
                         "payment_id" =>
-                            (int)$existingPayment["payment_id"],
-
-                        "payment_type" =>
-                            "turf",
-
-                        "booking_id" =>
-                            $bookingId,
-
-                        "amount" =>
-                            (float)$existingPayment["amount"],
-
-                        "payment_method" =>
-                            $existingPayment["payment_method"],
-
+                            (int)$existing["payment_id"],
                         "transaction_id" =>
-                            $existingPayment["transaction_id"],
-
-                        "status" =>
-                            "pending",
-
-                        "turf_name" =>
-                            $booking["turf_name"],
-
-                        "location" =>
-                            $booking["location"],
-
-                        "booking_date" =>
-                            $booking["booking_date"],
-
-                        "start_time" =>
-                            $booking["start_time"],
-
-                        "end_time" =>
-                            $booking["end_time"],
-                    ],
-                    200
+                            $transactionId
+                    ]
                 );
             }
 
-            $existing->close();
+            $duplicate->close();
+        }
 
-            // ----------------------------------------------------
-            // CREATE NEW PENDING PAYMENT
-            // ----------------------------------------------------
+        $con->begin_transaction();
 
-            $amount = (float)$booking["amount"];
+        try {
 
-            $transactionId =
-                generateTransactionId();
+            $serverAmount = 0.0;
+            $bookingId = null;
 
-            $status = "pending";
+            /*
+            |--------------------------------------------------------------------------
+            | TURF
+            |--------------------------------------------------------------------------
+            */
 
-            $insert = $con->prepare(
-                "INSERT INTO payments
-                (
-                    booking_id,
-                    order_id,
-                    payment_type,
-                    amount,
-                    payment_method,
-                    transaction_id,
-                    status,
-                    payment_date
-                )
-                VALUES
-                (
-                    ?,
-                    NULL,
-                    'turf',
-                    ?,
-                    ?,
-                    ?,
-                    ?,
-                    CURDATE()
-                )"
-            );
+            if ($paymentType === "turf") {
+
+                $bookingId =
+                    (int)(
+                        $data["booking_id"] ??
+                        0
+                    );
+
+                if ($bookingId <= 0) {
+                    throw new Exception(
+                        "booking_id is required"
+                    );
+                }
+
+                $stmt =
+                    $con->prepare(
+                        "SELECT
+                            booking_id,
+                            amount,
+                            status
+                         FROM bookings
+                         WHERE booking_id = ?
+                           AND user_id = ?
+                         LIMIT 1
+                         FOR UPDATE"
+                    );
+
+                if (!$stmt) {
+                    throw new Exception(
+                        $con->error
+                    );
+                }
+
+                $stmt->bind_param(
+                    "ii",
+                    $bookingId,
+                    $userId
+                );
+
+                $stmt->execute();
+
+                $result =
+                    $stmt->get_result();
+
+                if ($result->num_rows === 0) {
+                    $stmt->close();
+
+                    throw new Exception(
+                        "Booking not found"
+                    );
+                }
+
+                $booking =
+                    $result->fetch_assoc();
+
+                $stmt->close();
+
+                $bookingStatus =
+                    strtolower(
+                        (string)(
+                            $booking["status"] ??
+                            ""
+                        )
+                    );
+
+                if (in_array(
+                    $bookingStatus,
+                    [
+                        "paid",
+                        "completed"
+                    ],
+                    true
+                )) {
+                    throw new Exception(
+                        "Booking is already paid"
+                    );
+                }
+
+                $serverAmount =
+                    money(
+                        $booking["amount"]
+                    );
+
+                if (!arraysEqualFloat(
+                    $clientAmount,
+                    $serverAmount
+                )) {
+                    throw new Exception(
+                        "Payment amount does not match booking amount"
+                    );
+                }
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | PRODUCT
+            |--------------------------------------------------------------------------
+            */
+
+            if ($paymentType === "product") {
+
+                $items =
+                    $data["items"] ??
+                    [];
+
+                if (!is_array($items) ||
+                    count($items) === 0) {
+
+                    throw new Exception(
+                        "Product items are required"
+                    );
+                }
+
+                $subtotal = 0.0;
+
+                foreach ($items as $item) {
+
+                    $productId =
+                        (int)(
+                            $item["product_id"] ??
+                            0
+                        );
+
+                    $qty =
+                        (int)(
+                            $item["quantity"] ??
+                            0
+                        );
+
+                    if ($productId <= 0 ||
+                        $qty <= 0) {
+
+                        throw new Exception(
+                            "Invalid product_id or quantity"
+                        );
+                    }
+
+                    $stmt =
+                        $con->prepare(
+                            "SELECT
+                                product_id,
+                                price,
+                                stock,
+                                status,
+                                name
+                             FROM products
+                             WHERE product_id = ?
+                             LIMIT 1
+                             FOR UPDATE"
+                        );
+
+                    if (!$stmt) {
+                        throw new Exception(
+                            $con->error
+                        );
+                    }
+
+                    $stmt->bind_param(
+                        "i",
+                        $productId
+                    );
+
+                    $stmt->execute();
+
+                    $result =
+                        $stmt->get_result();
+
+                    if ($result->num_rows === 0) {
+                        $stmt->close();
+
+                        throw new Exception(
+                            "Product not found"
+                        );
+                    }
+
+                    $product =
+                        $result->fetch_assoc();
+
+                    $stmt->close();
+
+                    if (strtolower(
+                            (string)$product["status"]
+                        ) !== "available") {
+
+                        throw new Exception(
+                            "Product is not available: " .
+                            $product["name"]
+                        );
+                    }
+
+                    if (
+                        (int)$product["stock"] <
+                        $qty
+                    ) {
+                        throw new Exception(
+                            "Insufficient stock: " .
+                            $product["name"]
+                        );
+                    }
+
+                    $subtotal +=
+                        money(
+                            (float)$product["price"] *
+                            $qty
+                        );
+                }
+
+                $deliveryFee =
+                    $subtotal <= 0
+                        ? 0.0
+                        : (
+                            $subtotal >= 1000
+                                ? 0.0
+                                : 40.0
+                        );
+
+                $serverAmount =
+                    money(
+                        $subtotal +
+                        $deliveryFee
+                    );
+
+                if (!arraysEqualFloat(
+                    $clientAmount,
+                    $serverAmount
+                )) {
+                    throw new Exception(
+                        "Payment amount does not match the server-calculated total"
+                    );
+                }
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | CREATE PENDING PAYMENT
+            |--------------------------------------------------------------------------
+            */
+
+            $insert =
+                $con->prepare(
+                    "INSERT INTO payments
+                    (
+                        user_id,
+                        booking_id,
+                        order_id,
+                        payment_type,
+                        amount,
+                        payment_method,
+                        transaction_id,
+                        status,
+                        payment_date
+                    )
+                    VALUES
+                    (
+                        ?,
+                        ?,
+                        NULL,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        'pending',
+                        NOW()
+                    )"
+                );
 
             if (!$insert) {
                 throw new Exception(
@@ -551,17 +805,23 @@ if ($method === "POST") {
             }
 
             $insert->bind_param(
-                "idsss",
+                "iisdss",
+                $userId,
                 $bookingId,
-                $amount,
+                $paymentType,
+                $serverAmount,
                 $paymentMethod,
-                $transactionId,
-                $status
+                $transactionId
             );
 
             if (!$insert->execute()) {
+                $error =
+                    $insert->error;
+
+                $insert->close();
+
                 throw new Exception(
-                    $insert->error
+                    $error
                 );
             }
 
@@ -574,828 +834,656 @@ if ($method === "POST") {
 
             response(
                 true,
-                "Turf payment session created",
+                "Payment initiated successfully",
                 [
                     "payment_id" =>
                         $paymentId,
-
                     "payment_type" =>
-                        "turf",
-
+                        $paymentType,
                     "booking_id" =>
                         $bookingId,
-
                     "amount" =>
-                        $amount,
-
+                        $serverAmount,
                     "payment_method" =>
                         $paymentMethod,
-
                     "transaction_id" =>
                         $transactionId,
-
                     "status" =>
-                        "pending",
-
-                    "turf_id" =>
-                        (int)$booking["turf_id"],
-
-                    "slot_id" =>
-                        (int)$booking["slot_id"],
-
-                    "turf_name" =>
-                        $booking["turf_name"],
-
-                    "location" =>
-                        $booking["location"],
-
-                    "booking_date" =>
-                        $booking["booking_date"],
-
-                    "start_time" =>
-                        $booking["start_time"],
-
-                    "end_time" =>
-                        $booking["end_time"],
+                        "pending"
                 ],
                 201
             );
-        }
 
-        // ========================================================
-        // PRODUCT PAYMENT
-        // ========================================================
+        } catch (Throwable $e) {
 
-        $orderId = (int)(
-            $data["order_id"] ??
-            0
-        );
-
-        if ($orderId <= 0) {
-            throw new Exception(
-                "order_id is required"
-            );
-        }
-
-        $stmt = $con->prepare(
-            "SELECT
-                order_id,
-                user_id,
-                amount,
-                status
-             FROM orders
-             WHERE order_id = ?
-               AND user_id = ?
-             LIMIT 1
-             FOR UPDATE"
-        );
-
-        if (!$stmt) {
-            throw new Exception(
-                $con->error
-            );
-        }
-
-        $stmt->bind_param(
-            "ii",
-            $orderId,
-            $userId
-        );
-
-        if (!$stmt->execute()) {
-            throw new Exception(
-                $stmt->error
-            );
-        }
-
-        $result = $stmt->get_result();
-
-        if ($result->num_rows === 0) {
-            $stmt->close();
-
-            throw new Exception(
-                "Order not found"
-            );
-        }
-
-        $order = $result->fetch_assoc();
-
-        $stmt->close();
-
-        $orderStatus = strtolower(
-            trim(
-                (string)$order["status"]
-            )
-        );
-
-        if (
-            in_array(
-                $orderStatus,
-                [
-                    "paid",
-                    "delivered",
-                ],
-                true
-            )
-        ) {
-            throw new Exception(
-                "Order is already paid"
-            );
-        }
-
-        // --------------------------------------------------------
-        // EXISTING PENDING PRODUCT PAYMENT
-        // --------------------------------------------------------
-
-        $existing = $con->prepare(
-            "SELECT
-                payment_id,
-                transaction_id,
-                amount,
-                payment_method,
-                status,
-                payment_date
-             FROM payments
-             WHERE order_id = ?
-               AND payment_type = 'product'
-               AND status = 'pending'
-             ORDER BY payment_id DESC
-             LIMIT 1"
-        );
-
-        if (!$existing) {
-            throw new Exception(
-                $con->error
-            );
-        }
-
-        $existing->bind_param(
-            "i",
-            $orderId
-        );
-
-        if (!$existing->execute()) {
-            throw new Exception(
-                $existing->error
-            );
-        }
-
-        $existingResult =
-            $existing->get_result();
-
-        if ($existingResult->num_rows > 0) {
-
-            $existingPayment =
-                $existingResult->fetch_assoc();
-
-            $existing->close();
-
-            $con->commit();
+            $con->rollback();
 
             response(
-                true,
-                "Pending product payment already exists",
-                [
-                    "payment_id" =>
-                        (int)$existingPayment["payment_id"],
-
-                    "payment_type" =>
-                        "product",
-
-                    "order_id" =>
-                        $orderId,
-
-                    "amount" =>
-                        (float)$existingPayment["amount"],
-
-                    "payment_method" =>
-                        $existingPayment["payment_method"],
-
-                    "transaction_id" =>
-                        $existingPayment["transaction_id"],
-
-                    "status" =>
-                        "pending",
-                ],
-                200
+                false,
+                $e->getMessage(),
+                null,
+                409
             );
         }
+    }
 
-        $existing->close();
+    /*
+    |--------------------------------------------------------------------------
+    | FINALIZE
+    |--------------------------------------------------------------------------
+    */
 
-        // --------------------------------------------------------
-        // CREATE PRODUCT PAYMENT SESSION
-        // --------------------------------------------------------
-
-        $amount = (float)$order["amount"];
-
-        $transactionId =
-            generateTransactionId();
-
-        $status = "pending";
-
-        $insert = $con->prepare(
-            "INSERT INTO payments
-            (
-                booking_id,
-                order_id,
-                payment_type,
-                amount,
-                payment_method,
-                transaction_id,
-                status,
-                payment_date
-            )
-            VALUES
-            (
-                NULL,
-                ?,
-                'product',
-                ?,
-                ?,
-                ?,
-                ?,
-                CURDATE()
-            )"
-        );
-
-        if (!$insert) {
-            throw new Exception(
-                $con->error
-            );
-        }
-
-        $insert->bind_param(
-            "idsss",
-            $orderId,
-            $amount,
-            $paymentMethod,
-            $transactionId,
-            $status
-        );
-
-        if (!$insert->execute()) {
-            throw new Exception(
-                $insert->error
-            );
-        }
+    if ($action === "finalize") {
 
         $paymentId =
-            (int)$insert->insert_id;
-
-        $insert->close();
-
-        $con->commit();
-
-        response(
-            true,
-            "Product payment session created",
-            [
-                "payment_id" =>
-                    $paymentId,
-
-                "payment_type" =>
-                    "product",
-
-                "order_id" =>
-                    $orderId,
-
-                "amount" =>
-                    $amount,
-
-                "payment_method" =>
-                    $paymentMethod,
-
-                "transaction_id" =>
-                    $transactionId,
-
-                "status" =>
-                    "pending",
-            ],
-            201
-        );
-
-    } catch (Throwable $e) {
-
-        $con->rollback();
-
-        response(
-            false,
-            $e->getMessage(),
-            null,
-            409
-        );
-    }
-}
-
-// ============================================================
-// GET - PAYMENT STATUS / PAYMENT DETAILS
-// ============================================================
-
-if ($method === "GET") {
-
-    $requestedBookingId = (int)(
-        $_GET["booking_id"] ??
-        0
-    );
-
-    $requestedPaymentId = (int)(
-        $_GET["payment_id"] ??
-        0
-    );
-
-    // ========================================================
-    // USER
-    // ========================================================
-
-    if ($role === "user") {
-
-        // ------------------------------------------------------
-        // SPECIFIC BOOKING
-        // ------------------------------------------------------
-
-        if ($requestedBookingId > 0) {
-
-            $stmt = $con->prepare(
-                "SELECT
-                    p.payment_id,
-                    p.booking_id,
-                    p.order_id,
-                    p.payment_type,
-                    p.amount,
-                    p.payment_method,
-                    p.transaction_id,
-                    p.status,
-                    p.payment_date,
-
-                    b.turf_id,
-                    b.slot_id,
-                    b.booking_date,
-                    b.status AS booking_status,
-
-                    t.turf_name,
-                    t.location,
-
-                    ts.start_time,
-                    ts.end_time
-
-                 FROM payments p
-
-                 INNER JOIN bookings b
-                    ON b.booking_id = p.booking_id
-
-                 INNER JOIN turf_tb t
-                    ON t.turf_id = b.turf_id
-
-                 INNER JOIN turf_slots ts
-                    ON ts.slot_id = b.slot_id
-
-                 WHERE p.payment_type = 'turf'
-                   AND p.booking_id = ?
-                   AND b.user_id = ?
-
-                 ORDER BY p.payment_id DESC
-                 LIMIT 1"
+            (int)(
+                $data["payment_id"] ??
+                0
             );
 
+        $transactionId =
+            trim(
+                (string)(
+                    $data["transaction_id"] ??
+                    ""
+                )
+            );
+
+        if ($paymentId <= 0) {
+            response(
+                false,
+                "payment_id is required",
+                null,
+                422
+            );
+        }
+
+        if ($transactionId === "") {
+            response(
+                false,
+                "transaction_id is required",
+                null,
+                422
+            );
+        }
+
+        $con->begin_transaction();
+
+        try {
+
+            $stmt =
+                $con->prepare(
+                    "SELECT *
+                     FROM payments
+                     WHERE payment_id = ?
+                       AND user_id = ?
+                     LIMIT 1
+                     FOR UPDATE"
+                );
+
             if (!$stmt) {
-                response(
-                    false,
-                    "Failed to prepare payment query",
-                    null,
-                    500
+                throw new Exception(
+                    $con->error
                 );
             }
 
             $stmt->bind_param(
                 "ii",
-                $requestedBookingId,
+                $paymentId,
                 $userId
             );
 
-            if (!$stmt->execute()) {
-                $message = $stmt->error;
-                $stmt->close();
+            $stmt->execute();
 
-                response(
-                    false,
-                    $message,
-                    null,
-                    500
-                );
-            }
-
-            $result = $stmt->get_result();
+            $result =
+                $stmt->get_result();
 
             if ($result->num_rows === 0) {
                 $stmt->close();
+
+                throw new Exception(
+                    "Payment not found"
+                );
+            }
+
+            $payment =
+                $result->fetch_assoc();
+
+            $stmt->close();
+
+            if ((string)$payment["transaction_id"] !==
+                $transactionId) {
+
+                throw new Exception(
+                    "Payment reference mismatch"
+                );
+            }
+
+            $paymentStatus =
+                strtolower(
+                    (string)(
+                        $payment["status"] ??
+                        ""
+                    )
+                );
+
+            if ($paymentStatus !== "success") {
+                throw new Exception(
+                    "Payment is not verified yet"
+                );
+            }
+
+            $paymentType =
+                strtolower(
+                    (string)$payment["payment_type"]
+                );
+
+            /*
+            |--------------------------------------------------------------------------
+            | TURF FINALIZE
+            |--------------------------------------------------------------------------
+            */
+
+            if ($paymentType === "turf") {
+
+                $bookingId =
+                    (int)(
+                        $payment["booking_id"] ??
+                        0
+                    );
+
+                if ($bookingId <= 0) {
+                    throw new Exception(
+                        "Payment booking ID is missing"
+                    );
+                }
+
+                $booking =
+                    $con->prepare(
+                        "SELECT
+                            booking_id,
+                            status,
+                            amount
+                         FROM bookings
+                         WHERE booking_id = ?
+                           AND user_id = ?
+                         LIMIT 1
+                         FOR UPDATE"
+                    );
+
+                if (!$booking) {
+                    throw new Exception(
+                        $con->error
+                    );
+                }
+
+                $booking->bind_param(
+                    "ii",
+                    $bookingId,
+                    $userId
+                );
+
+                $booking->execute();
+
+                $bookingResult =
+                    $booking->get_result();
+
+                if ($bookingResult->num_rows === 0) {
+                    $booking->close();
+
+                    throw new Exception(
+                        "Booking not found"
+                    );
+                }
+
+                $bookingRow =
+                    $bookingResult
+                        ->fetch_assoc();
+
+                $booking->close();
+
+                $bookingStatus =
+                    strtolower(
+                        (string)(
+                            $bookingRow["status"] ??
+                            ""
+                        )
+                    );
+
+                if ($bookingStatus !==
+                    "paid") {
+
+                    $update =
+                        $con->prepare(
+                            "UPDATE bookings
+                             SET status = 'paid'
+                             WHERE booking_id = ?
+                               AND user_id = ?"
+                        );
+
+                    if (!$update) {
+                        throw new Exception(
+                            $con->error
+                        );
+                    }
+
+                    $update->bind_param(
+                        "ii",
+                        $bookingId,
+                        $userId
+                    );
+
+                    if (!$update->execute()) {
+                        throw new Exception(
+                            $update->error
+                        );
+                    }
+
+                    $update->close();
+                }
+
+                $con->commit();
 
                 response(
                     true,
-                    "No payment found for this booking",
-                    [],
-                    200
+                    "Turf payment finalized successfully",
+                    [
+                        "payment_id" =>
+                            $paymentId,
+                        "booking_id" =>
+                            $bookingId,
+                        "amount" =>
+                            money(
+                                $payment["amount"]
+                            ),
+                        "status" =>
+                            "success"
+                    ]
                 );
             }
 
-            $payment =
-                $result->fetch_assoc();
+            /*
+            |--------------------------------------------------------------------------
+            | PRODUCT FINALIZE
+            |--------------------------------------------------------------------------
+            */
 
-            $stmt->close();
+            if ($paymentType === "product") {
 
-            response(
-                true,
-                "Payment fetched successfully",
-                [
-                    $payment,
-                ],
-                200
-            );
-        }
+                $existingOrderId =
+                    (int)(
+                        $payment["order_id"] ??
+                        0
+                    );
 
-        // ------------------------------------------------------
-        // SPECIFIC PAYMENT
-        // ------------------------------------------------------
+                if ($existingOrderId > 0) {
 
-        if ($requestedPaymentId > 0) {
+                    $con->commit();
 
-            $stmt = $con->prepare(
-                "SELECT
-                    p.*,
+                    response(
+                        true,
+                        "Product payment already finalized",
+                        [
+                            "payment_id" =>
+                                $paymentId,
+                            "orders" => [
+                                [
+                                    "order_id" =>
+                                        $existingOrderId
+                                ]
+                            ],
+                            "amount" =>
+                                money(
+                                    $payment["amount"]
+                                ),
+                            "status" =>
+                                "success"
+                        ]
+                    );
+                }
 
-                    b.user_id,
-                    b.turf_id,
-                    b.slot_id,
-                    b.booking_date,
-                    b.status AS booking_status,
+                $items =
+                    $data["items"] ??
+                    [];
 
-                    t.turf_name,
-                    t.location,
+                if (!is_array($items) ||
+                    count($items) === 0) {
 
-                    ts.start_time,
-                    ts.end_time
+                    throw new Exception(
+                        "Product items are required"
+                    );
+                }
 
-                 FROM payments p
+                $subtotal = 0.0;
 
-                 LEFT JOIN bookings b
-                    ON b.booking_id = p.booking_id
+                $cleanItems = [];
 
-                 LEFT JOIN turf_tb t
-                    ON t.turf_id = b.turf_id
+                foreach ($items as $item) {
 
-                 LEFT JOIN turf_slots ts
-                    ON ts.slot_id = b.slot_id
+                    $productId =
+                        (int)(
+                            $item["product_id"] ??
+                            0
+                        );
 
-                 WHERE p.payment_id = ?
+                    $qty =
+                        (int)(
+                            $item["quantity"] ??
+                            0
+                        );
 
-                   AND (
-                        (
-                            p.payment_type = 'turf'
-                            AND b.user_id = ?
-                        )
-                        OR
-                        (
-                            p.payment_type = 'product'
-                            AND p.order_id IN (
-                                SELECT order_id
-                                FROM orders
-                                WHERE user_id = ?
+                    if ($productId <= 0 ||
+                        $qty <= 0) {
+
+                        throw new Exception(
+                            "Invalid product_id or quantity"
+                        );
+                    }
+
+                    $stmt =
+                        $con->prepare(
+                            "SELECT
+                                product_id,
+                                name,
+                                price,
+                                stock,
+                                status
+                             FROM products
+                             WHERE product_id = ?
+                             LIMIT 1
+                             FOR UPDATE"
+                        );
+
+                    if (!$stmt) {
+                        throw new Exception(
+                            $con->error
+                        );
+                    }
+
+                    $stmt->bind_param(
+                        "i",
+                        $productId
+                    );
+
+                    $stmt->execute();
+
+                    $result =
+                        $stmt->get_result();
+
+                    if ($result->num_rows === 0) {
+                        $stmt->close();
+
+                        throw new Exception(
+                            "Product not found"
+                        );
+                    }
+
+                    $product =
+                        $result->fetch_assoc();
+
+                    $stmt->close();
+
+                    if (strtolower(
+                            (string)$product["status"]
+                        ) !== "available") {
+
+                        throw new Exception(
+                            "Product is not available: " .
+                            $product["name"]
+                        );
+                    }
+
+                    if (
+                        (int)$product["stock"] <
+                        $qty
+                    ) {
+                        throw new Exception(
+                            "Insufficient stock: " .
+                            $product["name"]
+                        );
+                    }
+
+                    $lineAmount =
+                        money(
+                            (float)$product["price"] *
+                            $qty
+                        );
+
+                    $subtotal +=
+                        $lineAmount;
+
+                    $cleanItems[] = [
+                        "product_id" =>
+                            $productId,
+                        "quantity" =>
+                            $qty,
+                        "amount" =>
+                            $lineAmount,
+                        "name" =>
+                            $product["name"]
+                    ];
+                }
+
+                $deliveryFee =
+                    $subtotal >= 1000
+                        ? 0.0
+                        : 40.0;
+
+                $serverTotal =
+                    money(
+                        $subtotal +
+                        $deliveryFee
+                    );
+
+                $paymentAmount =
+                    money(
+                        $payment["amount"]
+                    );
+
+                if (!arraysEqualFloat(
+                    $serverTotal,
+                    $paymentAmount
+                )) {
+                    throw new Exception(
+                        "Payment amount no longer matches the order total"
+                    );
+                }
+
+                $createdOrders = [];
+                $firstOrderId = 0;
+
+                foreach ($cleanItems as $item) {
+
+                    $insert =
+                        $con->prepare(
+                            "INSERT INTO orders
+                            (
+                                user_id,
+                                product_id,
+                                quantity,
+                                amount,
+                                status,
+                                order_date
                             )
-                        )
-                   )
+                            VALUES
+                            (?, ?, ?, ?, 'paid', CURDATE())"
+                        );
 
-                 LIMIT 1"
-            );
+                    if (!$insert) {
+                        throw new Exception(
+                            $con->error
+                        );
+                    }
 
-            if (!$stmt) {
+                    $productId =
+                        (int)$item["product_id"];
+
+                    $qty =
+                        (int)$item["quantity"];
+
+                    $lineAmount =
+                        money($item["amount"]);
+
+                    $insert->bind_param(
+                        "iiid",
+                        $userId,
+                        $productId,
+                        $qty,
+                        $lineAmount
+                    );
+
+                    if (!$insert->execute()) {
+                        throw new Exception(
+                            $insert->error
+                        );
+                    }
+
+                    $orderId =
+                        (int)$insert->insert_id;
+
+                    $insert->close();
+
+                    if ($firstOrderId === 0) {
+                        $firstOrderId =
+                            $orderId;
+                    }
+
+                    $stock =
+                        $con->prepare(
+                            "UPDATE products
+                             SET stock = stock - ?
+                             WHERE product_id = ?"
+                        );
+
+                    if (!$stock) {
+                        throw new Exception(
+                            $con->error
+                        );
+                    }
+
+                    $stock->bind_param(
+                        "ii",
+                        $qty,
+                        $productId
+                    );
+
+                    if (!$stock->execute()) {
+                        throw new Exception(
+                            $stock->error
+                        );
+                    }
+
+                    $stock->close();
+
+                    $createdOrders[] = [
+                        "order_id" =>
+                            $orderId,
+                        "product_id" =>
+                            $productId,
+                        "product_name" =>
+                            $item["name"],
+                        "quantity" =>
+                            $qty,
+                        "amount" =>
+                            $lineAmount,
+                        "status" =>
+                            "paid"
+                    ];
+                }
+
+                if ($firstOrderId <= 0) {
+                    throw new Exception(
+                        "Failed to create order"
+                    );
+                }
+
+                $updatePayment =
+                    $con->prepare(
+                        "UPDATE payments
+                         SET order_id = ?
+                         WHERE payment_id = ?
+                           AND user_id = ?"
+                    );
+
+                if (!$updatePayment) {
+                    throw new Exception(
+                        $con->error
+                    );
+                }
+
+                $updatePayment->bind_param(
+                    "iii",
+                    $firstOrderId,
+                    $paymentId,
+                    $userId
+                );
+
+                if (!$updatePayment->execute()) {
+                    throw new Exception(
+                        $updatePayment->error
+                    );
+                }
+
+                $updatePayment->close();
+
+                $con->commit();
+
                 response(
-                    false,
-                    "Failed to prepare payment query",
-                    null,
-                    500
+                    true,
+                    "Product payment finalized successfully",
+                    [
+                        "payment_id" =>
+                            $paymentId,
+                        "order_id" =>
+                            $firstOrderId,
+                        "total_amount" =>
+                            $serverTotal,
+                        "orders" =>
+                            $createdOrders,
+                        "status" =>
+                            "success"
+                    ]
                 );
             }
 
-            $stmt->bind_param(
-                "iii",
-                $requestedPaymentId,
-                $userId,
-                $userId
+            throw new Exception(
+                "Unsupported payment type"
             );
 
-            if (!$stmt->execute()) {
-                $message = $stmt->error;
-                $stmt->close();
+        } catch (Throwable $e) {
 
-                response(
-                    false,
-                    $message,
-                    null,
-                    500
-                );
-            }
-
-            $result = $stmt->get_result();
-
-            if ($result->num_rows === 0) {
-                $stmt->close();
-
-                response(
-                    false,
-                    "Payment not found",
-                    null,
-                    404
-                );
-            }
-
-            $payment =
-                $result->fetch_assoc();
-
-            $stmt->close();
-
-            response(
-                true,
-                "Payment fetched successfully",
-                [
-                    $payment,
-                ],
-                200
-            );
-        }
-
-        // ------------------------------------------------------
-        // ALL USER PAYMENTS
-        // ------------------------------------------------------
-
-        $stmt = $con->prepare(
-            "SELECT
-                p.*,
-
-                b.turf_id,
-                b.slot_id,
-                b.booking_date,
-                b.status AS booking_status,
-
-                t.turf_name,
-                t.location,
-
-                ts.start_time,
-                ts.end_time
-
-             FROM payments p
-
-             LEFT JOIN bookings b
-                ON b.booking_id = p.booking_id
-
-             LEFT JOIN turf_tb t
-                ON t.turf_id = b.turf_id
-
-             LEFT JOIN turf_slots ts
-                ON ts.slot_id = b.slot_id
-
-             WHERE
-                (
-                    p.payment_type = 'turf'
-                    AND b.user_id = ?
-                )
-                OR
-                (
-                    p.payment_type = 'product'
-                    AND p.order_id IN (
-                        SELECT order_id
-                        FROM orders
-                        WHERE user_id = ?
-                    )
-                )
-
-             ORDER BY
-                p.payment_id DESC"
-        );
-
-        if (!$stmt) {
-            response(
-                false,
-                "Failed to prepare payment list",
-                null,
-                500
-            );
-        }
-
-        $stmt->bind_param(
-            "ii",
-            $userId,
-            $userId
-        );
-
-        if (!$stmt->execute()) {
-            $message = $stmt->error;
-            $stmt->close();
+            $con->rollback();
 
             response(
                 false,
-                $message,
+                $e->getMessage(),
                 null,
-                500
+                409
             );
         }
-
-        $result =
-            $stmt->get_result();
-
-        $payments = [];
-
-        while (
-            $row =
-                $result->fetch_assoc()
-        ) {
-            $payments[] = $row;
-        }
-
-        $stmt->close();
-
-        response(
-            true,
-            "Payments fetched successfully",
-            $payments,
-            200
-        );
     }
 
-    // ========================================================
-    // OWNER
-    // ========================================================
-
-    if ($role === "owner") {
-
-        $stmt = $con->prepare(
-            "SELECT
-                p.*,
-
-                b.user_id,
-                b.turf_id,
-                b.slot_id,
-                b.booking_date,
-                b.status AS booking_status,
-
-                t.turf_name,
-                t.location,
-
-                ts.start_time,
-                ts.end_time
-
-             FROM payments p
-
-             INNER JOIN bookings b
-                ON b.booking_id = p.booking_id
-
-             INNER JOIN turf_tb t
-                ON t.turf_id = b.turf_id
-
-             INNER JOIN turf_slots ts
-                ON ts.slot_id = b.slot_id
-
-             WHERE p.payment_type = 'turf'
-               AND t.owner_id = ?
-
-             ORDER BY p.payment_id DESC"
-        );
-
-        if (!$stmt) {
-            response(
-                false,
-                "Failed to prepare owner payments",
-                null,
-                500
-            );
-        }
-
-        $stmt->bind_param(
-            "i",
-            $userId
-        );
-
-        if (!$stmt->execute()) {
-            $message = $stmt->error;
-            $stmt->close();
-
-            response(
-                false,
-                $message,
-                null,
-                500
-            );
-        }
-
-        $result =
-            $stmt->get_result();
-
-        $payments = [];
-
-        while (
-            $row =
-                $result->fetch_assoc()
-        ) {
-            $payments[] = $row;
-        }
-
-        $stmt->close();
-
-        response(
-            true,
-            "Owner payments fetched successfully",
-            $payments,
-            200
-        );
-    }
-
-    // ========================================================
-    // ADMIN
-    // ========================================================
-
-    if ($role === "admin") {
-
-        $stmt = $con->prepare(
-            "SELECT
-                p.*,
-
-                b.user_id,
-                b.turf_id,
-                b.slot_id,
-                b.booking_date,
-                b.status AS booking_status,
-
-                t.turf_name,
-                t.location,
-
-                ts.start_time,
-                ts.end_time
-
-             FROM payments p
-
-             LEFT JOIN bookings b
-                ON b.booking_id = p.booking_id
-
-             LEFT JOIN turf_tb t
-                ON t.turf_id = b.turf_id
-
-             LEFT JOIN turf_slots ts
-                ON ts.slot_id = b.slot_id
-
-             ORDER BY p.payment_id DESC"
-        );
-
-        if (!$stmt) {
-            response(
-                false,
-                "Failed to prepare admin payments",
-                null,
-                500
-            );
-        }
-
-        if (!$stmt->execute()) {
-            $message = $stmt->error;
-            $stmt->close();
-
-            response(
-                false,
-                $message,
-                null,
-                500
-            );
-        }
-
-        $result =
-            $stmt->get_result();
-
-        $payments = [];
-
-        while (
-            $row =
-                $result->fetch_assoc()
-        ) {
-            $payments[] = $row;
-        }
-
-        $stmt->close();
-
-        response(
-            true,
-            "Admin payments fetched successfully",
-            $payments,
-            200
-        );
-    }
+    response(
+        false,
+        "Unsupported payment action",
+        null,
+        422
+    );
 }
 
-// ============================================================
-// ADMIN - UPDATE PAYMENT STATUS
-// ============================================================
+/*
+|--------------------------------------------------------------------------
+| ADMIN PAYMENT STATUS
+|--------------------------------------------------------------------------
+|
+| This is useful for testing.
+| Production should update payment status from
+| the actual payment gateway/webhook.
+|--------------------------------------------------------------------------
+*/
 
-if (
-    $method === "PATCH" ||
-    $method === "PUT"
-) {
+if ($method === "PATCH" ||
+    $method === "PUT") {
 
     if ($role !== "admin") {
         response(
@@ -1406,35 +1494,36 @@ if (
         );
     }
 
-    $paymentId = (int)(
-        $data["payment_id"] ??
-        0
-    );
+    $paymentId =
+        (int)(
+            $data["payment_id"] ??
+            0
+        );
 
-    $newStatus = strtolower(
-        trim(
-            (string)(
-                $data["status"] ??
-                ""
+    $status =
+        strtolower(
+            trim(
+                (string)(
+                    $data["status"] ??
+                    ""
+                )
             )
-        )
-    );
+        );
 
-    $allowedStatuses = [
+    $allowed = [
         "pending",
         "success",
         "failed",
-        "refunded",
+        "refunded"
     ];
 
-    if (
-        $paymentId <= 0 ||
+    if ($paymentId <= 0 ||
         !in_array(
-            $newStatus,
-            $allowedStatuses,
+            $status,
+            $allowed,
             true
-        )
-    ) {
+        )) {
+
         response(
             false,
             "Valid payment_id and status are required",
@@ -1447,23 +1536,18 @@ if (
 
     try {
 
-        // ========================================================
-        // GET PAYMENT
-        // ========================================================
-
-        $stmt = $con->prepare(
-            "SELECT
-                payment_id,
-                booking_id,
-                order_id,
-                payment_type,
-                amount,
-                status
-             FROM payments
-             WHERE payment_id = ?
-             LIMIT 1
-             FOR UPDATE"
-        );
+        $stmt =
+            $con->prepare(
+                "SELECT
+                    payment_id,
+                    booking_id,
+                    order_id,
+                    payment_type
+                 FROM payments
+                 WHERE payment_id = ?
+                 LIMIT 1
+                 FOR UPDATE"
+            );
 
         if (!$stmt) {
             throw new Exception(
@@ -1476,11 +1560,7 @@ if (
             $paymentId
         );
 
-        if (!$stmt->execute()) {
-            throw new Exception(
-                $stmt->error
-            );
-        }
+        $stmt->execute();
 
         $result =
             $stmt->get_result();
@@ -1498,15 +1578,12 @@ if (
 
         $stmt->close();
 
-        // ========================================================
-        // UPDATE PAYMENT
-        // ========================================================
-
-        $update = $con->prepare(
-            "UPDATE payments
-             SET status = ?
-             WHERE payment_id = ?"
-        );
+        $update =
+            $con->prepare(
+                "UPDATE payments
+                 SET status = ?
+                 WHERE payment_id = ?"
+            );
 
         if (!$update) {
             throw new Exception(
@@ -1516,7 +1593,7 @@ if (
 
         $update->bind_param(
             "si",
-            $newStatus,
+            $status,
             $paymentId
         );
 
@@ -1528,22 +1605,27 @@ if (
 
         $update->close();
 
-        // ========================================================
-        // TURF BOOKING STATUS
-        // ========================================================
+        /*
+        For turf, admin success can immediately
+        confirm the booking.
 
-        $bookingId = (int)(
-            $payment["booking_id"] ??
-            0
-        );
+        For product, finalizePayment() creates
+        the actual order rows.
+        */
 
         if (
-            $payment["payment_type"] === "turf" &&
-            $bookingId > 0
+            $status === "success" &&
+            strtolower(
+                (string)$payment["payment_type"]
+            ) === "turf"
         ) {
+            $bookingId =
+                (int)(
+                    $payment["booking_id"] ??
+                    0
+                );
 
-            if ($newStatus === "success") {
-
+            if ($bookingId > 0) {
                 $bookingUpdate =
                     $con->prepare(
                         "UPDATE bookings
@@ -1562,140 +1644,13 @@ if (
                     $bookingId
                 );
 
-                if (
-                    !$bookingUpdate->execute()
-                ) {
+                if (!$bookingUpdate->execute()) {
                     throw new Exception(
                         $bookingUpdate->error
                     );
                 }
 
                 $bookingUpdate->close();
-
-            } elseif (
-                in_array(
-                    $newStatus,
-                    [
-                        "failed",
-                        "refunded",
-                    ],
-                    true
-                )
-            ) {
-
-                $bookingUpdate =
-                    $con->prepare(
-                        "UPDATE bookings
-                         SET status = 'pending'
-                         WHERE booking_id = ?
-                           AND status <> 'paid'"
-                    );
-
-                if (!$bookingUpdate) {
-                    throw new Exception(
-                        $con->error
-                    );
-                }
-
-                $bookingUpdate->bind_param(
-                    "i",
-                    $bookingId
-                );
-
-                if (
-                    !$bookingUpdate->execute()
-                ) {
-                    throw new Exception(
-                        $bookingUpdate->error
-                    );
-                }
-
-                $bookingUpdate->close();
-            }
-        }
-
-        // ========================================================
-        // PRODUCT ORDER STATUS
-        // ========================================================
-
-        $orderId = (int)(
-            $payment["order_id"] ??
-            0
-        );
-
-        if (
-            $payment["payment_type"] === "product" &&
-            $orderId > 0
-        ) {
-
-            if ($newStatus === "success") {
-
-                $orderUpdate =
-                    $con->prepare(
-                        "UPDATE orders
-                         SET status = 'paid'
-                         WHERE order_id = ?"
-                    );
-
-                if (!$orderUpdate) {
-                    throw new Exception(
-                        $con->error
-                    );
-                }
-
-                $orderUpdate->bind_param(
-                    "i",
-                    $orderId
-                );
-
-                if (
-                    !$orderUpdate->execute()
-                ) {
-                    throw new Exception(
-                        $orderUpdate->error
-                    );
-                }
-
-                $orderUpdate->close();
-
-            } elseif (
-                in_array(
-                    $newStatus,
-                    [
-                        "failed",
-                        "refunded",
-                    ],
-                    true
-                )
-            ) {
-
-                $orderUpdate =
-                    $con->prepare(
-                        "UPDATE orders
-                         SET status = 'pending'
-                         WHERE order_id = ?"
-                    );
-
-                if (!$orderUpdate) {
-                    throw new Exception(
-                        $con->error
-                    );
-                }
-
-                $orderUpdate->bind_param(
-                    "i",
-                    $orderId
-                );
-
-                if (
-                    !$orderUpdate->execute()
-                ) {
-                    throw new Exception(
-                        $orderUpdate->error
-                    );
-                }
-
-                $orderUpdate->close();
             }
         }
 
@@ -1707,17 +1662,9 @@ if (
             [
                 "payment_id" =>
                     $paymentId,
-
-                "booking_id" =>
-                    $bookingId,
-
-                "order_id" =>
-                    $orderId,
-
                 "status" =>
-                    $newStatus,
-            ],
-            200
+                    $status
+            ]
         );
 
     } catch (Throwable $e) {
@@ -1733,14 +1680,9 @@ if (
     }
 }
 
-// ============================================================
-// UNSUPPORTED
-// ============================================================
-
 response(
     false,
     "Unsupported request",
     null,
     405
 );
-?>
