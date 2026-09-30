@@ -17,8 +17,18 @@ require_once __DIR__ . "/config/jwt.php";
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
 
-function response(bool $status, string $message, $data = null, int $code = 200): void
-{
+/*
+|--------------------------------------------------------------------------
+| RESPONSE
+|--------------------------------------------------------------------------
+*/
+
+function response(
+    bool $status,
+    string $message,
+    $data = null,
+    int $code = 200
+): void {
     http_response_code($code);
 
     $out = [
@@ -34,6 +44,12 @@ function response(bool $status, string $message, $data = null, int $code = 200):
     exit;
 }
 
+/*
+|--------------------------------------------------------------------------
+| INPUT
+|--------------------------------------------------------------------------
+*/
+
 function inputData(): array
 {
     $raw = file_get_contents("php://input");
@@ -44,42 +60,204 @@ function inputData(): array
 
     $decoded = json_decode($raw, true);
 
-    return is_array($decoded) ? $decoded : [];
+    return is_array($decoded)
+        ? $decoded
+        : [];
 }
+
+/*
+|--------------------------------------------------------------------------
+| GET AUTHORIZATION HEADER
+|--------------------------------------------------------------------------
+|
+| Apache/Render can expose Authorization through different
+| server variables depending on configuration.
+|
+*/
+
+function getAuthorizationHeader(): string
+{
+    // Normal Apache / PHP
+    if (!empty($_SERVER["HTTP_AUTHORIZATION"])) {
+        return trim(
+            (string)$_SERVER["HTTP_AUTHORIZATION"]
+        );
+    }
+
+    // Some Apache configurations
+    if (!empty($_SERVER["REDIRECT_HTTP_AUTHORIZATION"])) {
+        return trim(
+            (string)$_SERVER["REDIRECT_HTTP_AUTHORIZATION"]
+        );
+    }
+
+    // apache_request_headers()
+    if (function_exists("apache_request_headers")) {
+        $headers = apache_request_headers();
+
+        if (is_array($headers)) {
+            foreach ($headers as $name => $value) {
+                if (strtolower((string)$name) === "authorization") {
+                    return trim((string)$value);
+                }
+            }
+        }
+    }
+
+    // getallheaders()
+    if (function_exists("getallheaders")) {
+        $headers = getallheaders();
+
+        if (is_array($headers)) {
+            foreach ($headers as $name => $value) {
+                if (strtolower((string)$name) === "authorization") {
+                    return trim((string)$value);
+                }
+            }
+        }
+    }
+
+    return "";
+}
+
+/*
+|--------------------------------------------------------------------------
+| AUTHENTICATION
+|--------------------------------------------------------------------------
+*/
 
 function authenticate(array $allowedRoles): array
 {
     global $secret_key;
 
-    $header = $_SERVER["HTTP_AUTHORIZATION"] ?? "";
+    $header = getAuthorizationHeader();
 
-    if (!preg_match("/Bearer\s+(.+)/i", $header, $matches)) {
-        response(false, "Authorization token is required", null, 401);
+    /*
+    |--------------------------------------------------------------------------
+    | DEBUG
+    |--------------------------------------------------------------------------
+    | We intentionally do NOT print the actual token.
+    */
+
+    if ($header === "") {
+        response(
+            false,
+            "Authorization token is required",
+            null,
+            401
+        );
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | BEARER TOKEN
+    |--------------------------------------------------------------------------
+    */
+
+    if (!preg_match(
+        "/^Bearer\s+(.+)$/i",
+        $header,
+        $matches
+    )) {
+        response(
+            false,
+            "Invalid Authorization header",
+            null,
+            401
+        );
+    }
+
+    $token = trim(
+        $matches[1]
+    );
+
+    if ($token === "") {
+        response(
+            false,
+            "Authorization token is required",
+            null,
+            401
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | JWT DECODE
+    |--------------------------------------------------------------------------
+    */
+
     try {
-        $payload = (array) JWT::decode(
-            trim($matches[1]),
-            new Key($secret_key, "HS256")
+        $payload = (array)JWT::decode(
+            $token,
+            new Key(
+                $secret_key,
+                "HS256"
+            )
         );
 
-        if (($payload["type"] ?? "") !== "access") {
-            response(false, "Invalid access token", null, 401);
+        /*
+        |--------------------------------------------------------------------------
+        | TOKEN TYPE
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            !isset($payload["type"]) ||
+            $payload["type"] !== "access"
+        ) {
+            response(
+                false,
+                "Invalid access token",
+                null,
+                401
+            );
         }
 
-        $role = strtolower((string)($payload["role"] ?? ""));
+        /*
+        |--------------------------------------------------------------------------
+        | ROLE
+        |--------------------------------------------------------------------------
+        */
 
-        if (!in_array($role, $allowedRoles, true)) {
-            response(false, "Access denied", null, 403);
+        $role = strtolower(
+            (string)(
+                $payload["role"] ?? ""
+            )
+        );
+
+        if (
+            !in_array(
+                $role,
+                $allowedRoles,
+                true
+            )
+        ) {
+            response(
+                false,
+                "Access denied",
+                null,
+                403
+            );
         }
 
         return $payload;
     } catch (Throwable $e) {
-        response(false, "Invalid or expired token", null, 401);
+        response(
+            false,
+            "Invalid or expired token",
+            null,
+            401
+        );
     }
 
     return [];
 }
+
+/*
+|--------------------------------------------------------------------------
+| HELPERS
+|--------------------------------------------------------------------------
+*/
 
 function intValue($value): int
 {
@@ -88,52 +266,114 @@ function intValue($value): int
 
 function money($value): float
 {
-    return round((float)$value, 2);
-}
-
-set_exception_handler(function (Throwable $e) {
-    response(
-        false,
-        "Server error: " . $e->getMessage(),
-        null,
-        500
+    return round(
+        (float)$value,
+        2
     );
-});
-
-if (!isset($con) || $con->connect_error) {
-    response(false, "Database connection failed", null, 500);
-}
-
-$method = $_SERVER["REQUEST_METHOD"];
-$user = authenticate(["user", "admin"]);
-
-$role = strtolower((string)($user["role"] ?? ""));
-$userId = (int)($user["user_id"] ?? $user["id"] ?? 0);
-
-$data = inputData();
-
-if ($userId <= 0) {
-    response(false, "Invalid user ID", null, 401);
 }
 
 /*
 |--------------------------------------------------------------------------
-| GET
+| GLOBAL EXCEPTION HANDLER
 |--------------------------------------------------------------------------
-| User:
-|   /order_api.php
-|   /order_api.php?order_id=123
-|
-| Admin:
-|   all orders
-|   or one order with order_id
+*/
+
+set_exception_handler(
+    function (Throwable $e) {
+        response(
+            false,
+            "Server error: " .
+            $e->getMessage(),
+            null,
+            500
+        );
+    }
+);
+
+/*
+|--------------------------------------------------------------------------
+| DATABASE
+|--------------------------------------------------------------------------
+*/
+
+if (
+    !isset($con) ||
+    $con->connect_error
+) {
+    response(
+        false,
+        "Database connection failed",
+        null,
+        500
+    );
+}
+
+/*
+|--------------------------------------------------------------------------
+| REQUEST
+|--------------------------------------------------------------------------
+*/
+
+$method =
+    $_SERVER["REQUEST_METHOD"];
+
+/*
+|--------------------------------------------------------------------------
+| AUTHENTICATE USER
+|--------------------------------------------------------------------------
+*/
+
+$user = authenticate([
+    "user",
+    "admin"
+]);
+
+$role = strtolower(
+    (string)(
+        $user["role"] ?? ""
+    )
+);
+
+$userId = (int)(
+    $user["user_id"] ??
+    $user["id"] ??
+    0
+);
+
+if ($userId <= 0) {
+    response(
+        false,
+        "Invalid user ID",
+        null,
+        401
+    );
+}
+
+$data = inputData();
+
+/*
+|--------------------------------------------------------------------------
+| GET ORDERS
+|--------------------------------------------------------------------------
 */
 
 if ($method === "GET") {
-    $orderId = (int)($_GET["order_id"] ?? 0);
+
+    $orderId =
+        (int)(
+            $_GET["order_id"] ?? 0
+        );
+
+    /*
+    |--------------------------------------------------------------------------
+    | USER
+    |--------------------------------------------------------------------------
+    */
 
     if ($role === "user") {
+
         if ($orderId > 0) {
+
             $stmt = $con->prepare(
                 "SELECT
                     o.*,
@@ -149,7 +389,12 @@ if ($method === "GET") {
             );
 
             if (!$stmt) {
-                response(false, "Failed to prepare order query", null, 500);
+                response(
+                    false,
+                    "Failed to prepare order query",
+                    null,
+                    500
+                );
             }
 
             $stmt->bind_param(
@@ -157,7 +402,9 @@ if ($method === "GET") {
                 $userId,
                 $orderId
             );
+
         } else {
+
             $stmt = $con->prepare(
                 "SELECT
                     o.*,
@@ -168,11 +415,18 @@ if ($method === "GET") {
                  JOIN products p
                    ON p.product_id = o.product_id
                  WHERE o.user_id = ?
-                 ORDER BY o.order_date DESC, o.order_id DESC"
+                 ORDER BY
+                    o.order_date DESC,
+                    o.order_id DESC"
             );
 
             if (!$stmt) {
-                response(false, "Failed to prepare orders query", null, 500);
+                response(
+                    false,
+                    "Failed to prepare orders query",
+                    null,
+                    500
+                );
             }
 
             $stmt->bind_param(
@@ -180,8 +434,17 @@ if ($method === "GET") {
                 $userId
             );
         }
+
+    /*
+    |--------------------------------------------------------------------------
+    | ADMIN
+    |--------------------------------------------------------------------------
+    */
+
     } else {
+
         if ($orderId > 0) {
+
             $stmt = $con->prepare(
                 "SELECT
                     o.*,
@@ -196,14 +459,21 @@ if ($method === "GET") {
             );
 
             if (!$stmt) {
-                response(false, "Failed to prepare order query", null, 500);
+                response(
+                    false,
+                    "Failed to prepare order query",
+                    null,
+                    500
+                );
             }
 
             $stmt->bind_param(
                 "i",
                 $orderId
             );
+
         } else {
+
             $stmt = $con->prepare(
                 "SELECT
                     o.*,
@@ -213,27 +483,47 @@ if ($method === "GET") {
                  FROM orders o
                  JOIN products p
                    ON p.product_id = o.product_id
-                 ORDER BY o.order_date DESC, o.order_id DESC"
+                 ORDER BY
+                    o.order_date DESC,
+                    o.order_id DESC"
             );
 
             if (!$stmt) {
-                response(false, "Failed to prepare orders query", null, 500);
+                response(
+                    false,
+                    "Failed to prepare orders query",
+                    null,
+                    500
+                );
             }
         }
     }
 
     $stmt->execute();
 
-    $result = $stmt->get_result();
+    $result =
+        $stmt->get_result();
 
     $orders = [];
 
-    while ($row = $result->fetch_assoc()) {
-        $row["order_id"] = (int)$row["order_id"];
-        $row["user_id"] = (int)$row["user_id"];
-        $row["product_id"] = (int)$row["product_id"];
-        $row["quantity"] = (int)$row["quantity"];
-        $row["amount"] = money($row["amount"]);
+    while (
+        $row = $result->fetch_assoc()
+    ) {
+
+        $row["order_id"] =
+            (int)$row["order_id"];
+
+        $row["user_id"] =
+            (int)$row["user_id"];
+
+        $row["product_id"] =
+            (int)$row["product_id"];
+
+        $row["quantity"] =
+            (int)$row["quantity"];
+
+        $row["amount"] =
+            money($row["amount"]);
 
         $orders[] = $row;
     }
@@ -241,8 +531,14 @@ if ($method === "GET") {
     $stmt->close();
 
     if ($orderId > 0) {
+
         if (count($orders) === 0) {
-            response(false, "Order not found", null, 404);
+            response(
+                false,
+                "Order not found",
+                null,
+                404
+            );
         }
 
         response(
@@ -261,14 +557,12 @@ if ($method === "GET") {
 
 /*
 |--------------------------------------------------------------------------
-| POST
+| POST - CREATE ORDER
 |--------------------------------------------------------------------------
-| Legacy/direct order creation endpoint.
-|
-| Store checkout should use payment_api.php finalize flow instead.
 */
 
 if ($method === "POST") {
+
     if ($role !== "user") {
         response(
             false,
@@ -278,9 +572,13 @@ if ($method === "POST") {
         );
     }
 
-    $items = $data["items"] ?? [];
+    $items =
+        $data["items"] ?? [];
 
-    if (!is_array($items) || count($items) === 0) {
+    if (
+        !is_array($items) ||
+        count($items) === 0
+    ) {
         response(
             false,
             "Order items are required",
@@ -292,22 +590,36 @@ if ($method === "POST") {
     $con->begin_transaction();
 
     try {
+
         $created = [];
         $total = 0.0;
 
         foreach ($items as $item) {
+
             $productId =
-                (int)($item["product_id"] ?? 0);
+                (int)(
+                    $item["product_id"] ?? 0
+                );
 
             $qty =
-                (int)($item["quantity"] ?? 0);
+                (int)(
+                    $item["quantity"] ?? 0
+                );
 
-            if ($productId <= 0 ||
-                $qty <= 0) {
+            if (
+                $productId <= 0 ||
+                $qty <= 0
+            ) {
                 throw new Exception(
                     "Invalid product_id or quantity"
                 );
             }
+
+            /*
+            |--------------------------------------------------------------------------
+            | GET PRODUCT
+            |--------------------------------------------------------------------------
+            */
 
             $stmt = $con->prepare(
                 "SELECT
@@ -338,7 +650,9 @@ if ($method === "POST") {
             $result =
                 $stmt->get_result();
 
-            if ($result->num_rows === 0) {
+            if (
+                $result->num_rows === 0
+            ) {
                 $stmt->close();
 
                 throw new Exception(
@@ -351,27 +665,55 @@ if ($method === "POST") {
 
             $stmt->close();
 
-            if (strtolower(
+            /*
+            |--------------------------------------------------------------------------
+            | PRODUCT STATUS
+            |--------------------------------------------------------------------------
+            */
+
+            if (
+                strtolower(
                     (string)$product["status"]
-                ) !== "available") {
+                ) !== "available"
+            ) {
                 throw new Exception(
                     "Product is not available: " .
                     $product["name"]
                 );
             }
 
-            if ((int)$product["stock"] < $qty) {
+            /*
+            |--------------------------------------------------------------------------
+            | STOCK
+            |--------------------------------------------------------------------------
+            */
+
+            if (
+                (int)$product["stock"] < $qty
+            ) {
                 throw new Exception(
                     "Insufficient stock: " .
                     $product["name"]
                 );
             }
 
+            /*
+            |--------------------------------------------------------------------------
+            | AMOUNT
+            |--------------------------------------------------------------------------
+            */
+
             $amount =
                 money(
                     (float)$product["price"] *
                     $qty
                 );
+
+            /*
+            |--------------------------------------------------------------------------
+            | INSERT ORDER
+            |--------------------------------------------------------------------------
+            */
 
             $insert = $con->prepare(
                 "INSERT INTO orders
@@ -383,7 +725,15 @@ if ($method === "POST") {
                     status,
                     order_date
                 )
-                VALUES (?, ?, ?, ?, 'pending', CURDATE())"
+                VALUES
+                (
+                    ?,
+                    ?,
+                    ?,
+                    ?,
+                    'pending',
+                    CURDATE()
+                )"
             );
 
             if (!$insert) {
@@ -400,7 +750,9 @@ if ($method === "POST") {
                 $amount
             );
 
-            if (!$insert->execute()) {
+            if (
+                !$insert->execute()
+            ) {
                 $error =
                     $insert->error;
 
@@ -415,6 +767,12 @@ if ($method === "POST") {
                 (int)$insert->insert_id;
 
             $insert->close();
+
+            /*
+            |--------------------------------------------------------------------------
+            | UPDATE STOCK
+            |--------------------------------------------------------------------------
+            */
 
             $stock =
                 $con->prepare(
@@ -435,7 +793,9 @@ if ($method === "POST") {
                 $productId
             );
 
-            if (!$stock->execute()) {
+            if (
+                !$stock->execute()
+            ) {
                 throw new Exception(
                     $stock->error
                 );
@@ -446,13 +806,23 @@ if ($method === "POST") {
             $total += $amount;
 
             $created[] = [
-                "order_id" => $orderId,
-                "product_id" => $productId,
+                "order_id" =>
+                    $orderId,
+
+                "product_id" =>
+                    $productId,
+
                 "product_name" =>
                     $product["name"],
-                "quantity" => $qty,
-                "amount" => $amount,
-                "status" => "pending"
+
+                "quantity" =>
+                    $qty,
+
+                "amount" =>
+                    $amount,
+
+                "status" =>
+                    "pending"
             ];
         }
 
@@ -462,14 +832,20 @@ if ($method === "POST") {
             true,
             "Order created successfully",
             [
-                "user_id" => $userId,
+                "user_id" =>
+                    $userId,
+
                 "total_amount" =>
                     money($total),
-                "orders" => $created
+
+                "orders" =>
+                    $created
             ],
             201
         );
+
     } catch (Throwable $e) {
+
         $con->rollback();
 
         response(
@@ -487,8 +863,10 @@ if ($method === "POST") {
 |--------------------------------------------------------------------------
 */
 
-if ($method === "PATCH" ||
-    $method === "PUT") {
+if (
+    $method === "PATCH" ||
+    $method === "PUT"
+) {
 
     if ($role !== "admin") {
         response(
@@ -500,7 +878,9 @@ if ($method === "PATCH" ||
     }
 
     $orderId =
-        (int)($data["order_id"] ?? 0);
+        (int)(
+            $data["order_id"] ?? 0
+        );
 
     $status =
         strtolower(
@@ -520,9 +900,14 @@ if ($method === "PATCH" ||
         "cancelled"
     ];
 
-    if ($orderId <= 0 ||
-        !in_array($status, $allowed, true)) {
-
+    if (
+        $orderId <= 0 ||
+        !in_array(
+            $status,
+            $allowed,
+            true
+        )
+    ) {
         response(
             false,
             "Valid order_id and status are required",
@@ -552,8 +937,11 @@ if ($method === "PATCH" ||
         $orderId
     );
 
-    if (!$stmt->execute()) {
-        $error = $stmt->error;
+    if (
+        !$stmt->execute()
+    ) {
+        $error =
+            $stmt->error;
 
         $stmt->close();
 
@@ -565,7 +953,9 @@ if ($method === "PATCH" ||
         );
     }
 
-    if ($stmt->affected_rows === 0) {
+    if (
+        $stmt->affected_rows === 0
+    ) {
         $stmt->close();
 
         response(
@@ -586,11 +976,12 @@ if ($method === "PATCH" ||
 
 /*
 |--------------------------------------------------------------------------
-| USER CANCEL
+| DELETE - USER CANCEL
 |--------------------------------------------------------------------------
 */
 
 if ($method === "DELETE") {
+
     if ($role !== "user") {
         response(
             false,
@@ -619,6 +1010,13 @@ if ($method === "DELETE") {
     $con->begin_transaction();
 
     try {
+
+        /*
+        |--------------------------------------------------------------------------
+        | FIND ORDER
+        |--------------------------------------------------------------------------
+        */
+
         $stmt = $con->prepare(
             "SELECT
                 product_id,
@@ -648,7 +1046,9 @@ if ($method === "DELETE") {
         $result =
             $stmt->get_result();
 
-        if ($result->num_rows === 0) {
+        if (
+            $result->num_rows === 0
+        ) {
             $stmt->close();
 
             throw new Exception(
@@ -661,21 +1061,35 @@ if ($method === "DELETE") {
 
         $stmt->close();
 
-        if (strtolower(
-                (string)$order["status"]
-            ) !== "pending") {
+        /*
+        |--------------------------------------------------------------------------
+        | ONLY PENDING CAN CANCEL
+        |--------------------------------------------------------------------------
+        */
 
+        if (
+            strtolower(
+                (string)$order["status"]
+            ) !== "pending"
+        ) {
             throw new Exception(
                 "Only pending orders can be cancelled"
             );
         }
 
-        $update = $con->prepare(
-            "UPDATE orders
-             SET status = 'cancelled'
-             WHERE order_id = ?
-               AND user_id = ?"
-        );
+        /*
+        |--------------------------------------------------------------------------
+        | UPDATE ORDER
+        |--------------------------------------------------------------------------
+        */
+
+        $update =
+            $con->prepare(
+                "UPDATE orders
+                 SET status = 'cancelled'
+                 WHERE order_id = ?
+                   AND user_id = ?"
+            );
 
         if (!$update) {
             throw new Exception(
@@ -689,7 +1103,9 @@ if ($method === "DELETE") {
             $userId
         );
 
-        if (!$update->execute()) {
+        if (
+            !$update->execute()
+        ) {
             throw new Exception(
                 $update->error
             );
@@ -697,17 +1113,24 @@ if ($method === "DELETE") {
 
         $update->close();
 
+        /*
+        |--------------------------------------------------------------------------
+        | RESTORE STOCK
+        |--------------------------------------------------------------------------
+        */
+
         $productId =
             (int)$order["product_id"];
 
         $qty =
             (int)$order["quantity"];
 
-        $restore = $con->prepare(
-            "UPDATE products
-             SET stock = stock + ?
-             WHERE product_id = ?"
-        );
+        $restore =
+            $con->prepare(
+                "UPDATE products
+                 SET stock = stock + ?
+                 WHERE product_id = ?"
+            );
 
         if (!$restore) {
             throw new Exception(
@@ -721,7 +1144,9 @@ if ($method === "DELETE") {
             $productId
         );
 
-        if (!$restore->execute()) {
+        if (
+            !$restore->execute()
+        ) {
             throw new Exception(
                 $restore->error
             );
@@ -735,7 +1160,9 @@ if ($method === "DELETE") {
             true,
             "Order cancelled successfully"
         );
+
     } catch (Throwable $e) {
+
         $con->rollback();
 
         response(
@@ -746,6 +1173,12 @@ if ($method === "DELETE") {
         );
     }
 }
+
+/*
+|--------------------------------------------------------------------------
+| UNSUPPORTED REQUEST
+|--------------------------------------------------------------------------
+*/
 
 response(
     false,
