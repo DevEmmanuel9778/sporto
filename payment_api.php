@@ -17,8 +17,18 @@ require_once __DIR__ . "/config/jwt.php";
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
 
-function response(bool $status, string $message, $data = null, int $code = 200): void
-{
+/*
+|--------------------------------------------------------------------------
+| RESPONSE
+|--------------------------------------------------------------------------
+*/
+
+function response(
+    bool $status,
+    string $message,
+    $data = null,
+    int $code = 200
+): void {
     http_response_code($code);
 
     $out = [
@@ -34,6 +44,12 @@ function response(bool $status, string $message, $data = null, int $code = 200):
     exit;
 }
 
+/*
+|--------------------------------------------------------------------------
+| INPUT
+|--------------------------------------------------------------------------
+*/
+
 function inputData(): array
 {
     $raw = file_get_contents("php://input");
@@ -47,15 +63,71 @@ function inputData(): array
     return is_array($data) ? $data : [];
 }
 
+/*
+|--------------------------------------------------------------------------
+| AUTHORIZATION HEADER
+|--------------------------------------------------------------------------
+| Apache / Render may expose Authorization header using different
+| server variables.
+|--------------------------------------------------------------------------
+*/
+
+function getAuthorizationHeader(): string
+{
+    $header = "";
+
+    if (!empty($_SERVER["HTTP_AUTHORIZATION"])) {
+        $header = $_SERVER["HTTP_AUTHORIZATION"];
+    }
+
+    if ($header === "" &&
+        !empty($_SERVER["REDIRECT_HTTP_AUTHORIZATION"])) {
+        $header = $_SERVER["REDIRECT_HTTP_AUTHORIZATION"];
+    }
+
+    if ($header === "" &&
+        function_exists("apache_request_headers")) {
+
+        $headers = apache_request_headers();
+
+        foreach ($headers as $key => $value) {
+            if (strcasecmp($key, "Authorization") === 0) {
+                $header = $value;
+                break;
+            }
+        }
+    }
+
+    if ($header === "" &&
+        function_exists("getallheaders")) {
+
+        $headers = getallheaders();
+
+        foreach ($headers as $key => $value) {
+            if (strcasecmp($key, "Authorization") === 0) {
+                $header = $value;
+                break;
+            }
+        }
+    }
+
+    return trim($header);
+}
+
+/*
+|--------------------------------------------------------------------------
+| AUTHENTICATION
+|--------------------------------------------------------------------------
+*/
+
 function authenticate(array $roles): array
 {
     global $secret_key;
 
-    $header =
-        $_SERVER["HTTP_AUTHORIZATION"] ?? "";
+    $header = getAuthorizationHeader();
 
     if (!preg_match(
-        "/Bearer\s+(.+)/i",
+        "/^Bearer\s+(.+)$/i",
         $header,
         $matches
     )) {
@@ -67,15 +139,26 @@ function authenticate(array $roles): array
         );
     }
 
+    $token = trim($matches[1]);
+
+    if ($token === "") {
+        response(
+            false,
+            "Authorization token is required",
+            null,
+            401
+        );
+    }
+
     try {
-        $payload =
-            (array)JWT::decode(
-                trim($matches[1]),
-                new Key(
-                    $secret_key,
-                    "HS256"
-                )
-            );
+
+        $payload = (array) JWT::decode(
+            $token,
+            new Key(
+                $secret_key,
+                "HS256"
+            )
+        );
 
         if (($payload["type"] ?? "") !== "access") {
             response(
@@ -86,12 +169,11 @@ function authenticate(array $roles): array
             );
         }
 
-        $role =
-            strtolower(
-                (string)(
-                    $payload["role"] ?? ""
-                )
-            );
+        $role = strtolower(
+            (string)(
+                $payload["role"] ?? ""
+            )
+        );
 
         if (!in_array(
             $role,
@@ -107,7 +189,9 @@ function authenticate(array $roles): array
         }
 
         return $payload;
+
     } catch (Throwable $e) {
+
         response(
             false,
             "Invalid or expired token",
@@ -118,6 +202,12 @@ function authenticate(array $roles): array
 
     return [];
 }
+
+/*
+|--------------------------------------------------------------------------
+| HELPERS
+|--------------------------------------------------------------------------
+*/
 
 function money($value): float
 {
@@ -134,6 +224,12 @@ function arraysEqualFloat(
     return abs($a - $b) < 0.01;
 }
 
+/*
+|--------------------------------------------------------------------------
+| DATABASE
+|--------------------------------------------------------------------------
+*/
+
 if (!isset($con) ||
     $con->connect_error) {
 
@@ -145,29 +241,31 @@ if (!isset($con) ||
     );
 }
 
-$method =
-    $_SERVER["REQUEST_METHOD"];
+/*
+|--------------------------------------------------------------------------
+| AUTH
+|--------------------------------------------------------------------------
+*/
 
-$payload =
-    authenticate([
-        "user",
-        "owner",
-        "admin"
-    ]);
+$method = $_SERVER["REQUEST_METHOD"];
 
-$role =
-    strtolower(
-        (string)(
-            $payload["role"] ?? ""
-        )
-    );
+$payload = authenticate([
+    "user",
+    "owner",
+    "admin"
+]);
 
-$userId =
-    (int)(
-        $payload["user_id"] ??
-        $payload["id"] ??
-        0
-    );
+$role = strtolower(
+    (string)(
+        $payload["role"] ?? ""
+    )
+);
+
+$userId = (int)(
+    $payload["user_id"] ??
+    $payload["id"] ??
+    0
+);
 
 $data = inputData();
 
@@ -178,20 +276,18 @@ $data = inputData();
 */
 
 if ($method === "GET") {
-    $paymentId =
-        (int)(
-            $_GET["payment_id"] ?? 0
-        );
 
-    $bookingId =
-        (int)(
-            $_GET["booking_id"] ?? 0
-        );
+    $paymentId = (int)(
+        $_GET["payment_id"] ?? 0
+    );
 
-    $orderId =
-        (int)(
-            $_GET["order_id"] ?? 0
-        );
+    $bookingId = (int)(
+        $_GET["booking_id"] ?? 0
+    );
+
+    $orderId = (int)(
+        $_GET["order_id"] ?? 0
+    );
 
     if ($role === "user") {
 
@@ -232,8 +328,7 @@ if ($method === "GET") {
             ) .
             " ORDER BY p.payment_id DESC";
 
-        $stmt =
-            $con->prepare($sql);
+        $stmt = $con->prepare($sql);
 
         if (!$stmt) {
             response(
@@ -248,19 +343,19 @@ if ($method === "GET") {
             $types,
             ...$params
         );
+
     } elseif ($role === "owner") {
 
-        $stmt =
-            $con->prepare(
-                "SELECT p.*
-                 FROM payments p
-                 JOIN bookings b
-                   ON b.booking_id = p.booking_id
-                 JOIN turf_tb t
-                   ON t.turf_id = b.turf_id
-                 WHERE t.owner_id = ?
-                 ORDER BY p.payment_id DESC"
-            );
+        $stmt = $con->prepare(
+            "SELECT p.*
+             FROM payments p
+             JOIN bookings b
+               ON b.booking_id = p.booking_id
+             JOIN turf_tb t
+               ON t.turf_id = b.turf_id
+             WHERE t.owner_id = ?
+             ORDER BY p.payment_id DESC"
+        );
 
         if (!$stmt) {
             response(
@@ -275,14 +370,14 @@ if ($method === "GET") {
             "i",
             $userId
         );
+
     } else {
 
-        $stmt =
-            $con->prepare(
-                "SELECT p.*
-                 FROM payments p
-                 ORDER BY p.payment_id DESC"
-            );
+        $stmt = $con->prepare(
+            "SELECT p.*
+             FROM payments p
+             ORDER BY p.payment_id DESC"
+        );
 
         if (!$stmt) {
             response(
@@ -296,45 +391,34 @@ if ($method === "GET") {
 
     $stmt->execute();
 
-    $result =
-        $stmt->get_result();
+    $result = $stmt->get_result();
 
     $payments = [];
 
-    while ($row =
-        $result->fetch_assoc()) {
+    while ($row = $result->fetch_assoc()) {
 
         $row["payment_id"] =
             (int)$row["payment_id"];
 
-        if (isset(
-            $row["user_id"]
-        )) {
+        if (isset($row["user_id"])) {
             $row["user_id"] =
                 (int)$row["user_id"];
         }
 
-        if (isset(
-            $row["booking_id"]
-        )) {
+        if (isset($row["booking_id"])) {
             $row["booking_id"] =
                 (int)$row["booking_id"];
         }
 
-        if (isset(
-            $row["order_id"]
-        )) {
+        if (isset($row["order_id"])) {
             $row["order_id"] =
                 (int)$row["order_id"];
         }
 
         $row["amount"] =
-            money(
-                $row["amount"]
-            );
+            money($row["amount"]);
 
-        $payments[] =
-            $row;
+        $payments[] = $row;
     }
 
     $stmt->close();
@@ -386,54 +470,49 @@ if ($method === "POST") {
         );
     }
 
-    $action =
-        strtolower(
-            trim(
-                (string)(
-                    $data["action"] ??
-                    "initiate"
-                )
+    $action = strtolower(
+        trim(
+            (string)(
+                $data["action"] ??
+                "initiate"
             )
-        );
+        )
+    );
 
     /*
     |--------------------------------------------------------------------------
-    | INITIATE
+    | INITIATE PAYMENT
     |--------------------------------------------------------------------------
     */
 
     if ($action === "initiate") {
 
-        $paymentType =
-            strtolower(
-                trim(
-                    (string)(
-                        $data["payment_type"] ??
-                        ""
-                    )
-                )
-            );
-
-        $paymentMethod =
+        $paymentType = strtolower(
             trim(
                 (string)(
-                    $data["payment_method"] ??
+                    $data["payment_type"] ??
                     ""
                 )
-            );
+            )
+        );
 
-        $transactionId =
-            trim(
-                (string)(
-                    $data["transaction_id"] ??
-                    ""
-                )
-            );
+        $paymentMethod = trim(
+            (string)(
+                $data["payment_method"] ??
+                ""
+            )
+        );
 
-        $clientAmount =
-            money(
-                $data["amount"] ?? 0
-            );
+        $transactionId = trim(
+            (string)(
+                $data["transaction_id"] ??
+                ""
+            )
+        );
+
+        $clientAmount = money(
+            $data["amount"] ?? 0
+        );
 
         if (!in_array(
             $paymentType,
@@ -466,28 +545,21 @@ if ($method === "POST") {
             );
         }
 
-        if ($clientAmount <= 0) {
-            response(
-                false,
-                "Invalid payment amount",
-                null,
-                422
-            );
-        }
-
         /*
-        Prevent duplicate transaction references.
+        |--------------------------------------------------------------------------
+        | DUPLICATE TRANSACTION
+        |--------------------------------------------------------------------------
         */
 
-        $duplicate =
-            $con->prepare(
-                "SELECT payment_id
-                 FROM payments
-                 WHERE transaction_id = ?
-                 LIMIT 1"
-            );
+        $duplicate = $con->prepare(
+            "SELECT payment_id
+             FROM payments
+             WHERE transaction_id = ?
+             LIMIT 1"
+        );
 
         if ($duplicate) {
+
             $duplicate->bind_param(
                 "s",
                 $transactionId
@@ -499,6 +571,7 @@ if ($method === "POST") {
                 $duplicate->get_result();
 
             if ($duplicateResult->num_rows > 0) {
+
                 $existing =
                     $duplicateResult->fetch_assoc();
 
@@ -525,20 +598,20 @@ if ($method === "POST") {
 
             $serverAmount = 0.0;
             $bookingId = null;
+            $orderId = null;
 
             /*
             |--------------------------------------------------------------------------
-            | TURF
+            | TURF PAYMENT
             |--------------------------------------------------------------------------
             */
 
             if ($paymentType === "turf") {
 
-                $bookingId =
-                    (int)(
-                        $data["booking_id"] ??
-                        0
-                    );
+                $bookingId = (int)(
+                    $data["booking_id"] ??
+                    0
+                );
 
                 if ($bookingId <= 0) {
                     throw new Exception(
@@ -546,18 +619,17 @@ if ($method === "POST") {
                     );
                 }
 
-                $stmt =
-                    $con->prepare(
-                        "SELECT
-                            booking_id,
-                            amount,
-                            status
-                         FROM bookings
-                         WHERE booking_id = ?
-                           AND user_id = ?
-                         LIMIT 1
-                         FOR UPDATE"
-                    );
+                $stmt = $con->prepare(
+                    "SELECT
+                        booking_id,
+                        amount,
+                        status
+                     FROM bookings
+                     WHERE booking_id = ?
+                       AND user_id = ?
+                     LIMIT 1
+                     FOR UPDATE"
+                );
 
                 if (!$stmt) {
                     throw new Exception(
@@ -577,6 +649,7 @@ if ($method === "POST") {
                     $stmt->get_result();
 
                 if ($result->num_rows === 0) {
+
                     $stmt->close();
 
                     throw new Exception(
@@ -615,10 +688,12 @@ if ($method === "POST") {
                         $booking["amount"]
                     );
 
-                if (!arraysEqualFloat(
-                    $clientAmount,
-                    $serverAmount
-                )) {
+                if ($clientAmount > 0 &&
+                    !arraysEqualFloat(
+                        $clientAmount,
+                        $serverAmount
+                    )) {
+
                     throw new Exception(
                         "Payment amount does not match booking amount"
                     );
@@ -627,126 +702,119 @@ if ($method === "POST") {
 
             /*
             |--------------------------------------------------------------------------
-            | PRODUCT
+            | PRODUCT PAYMENT
+            |--------------------------------------------------------------------------
+            |
+            | Product order is already created by order_api.php.
+            | We use order_id instead of asking Flutter to send
+            | product items again.
             |--------------------------------------------------------------------------
             */
 
             if ($paymentType === "product") {
 
-                $items =
-                    $data["items"] ??
-                    [];
+                $orderId = (int)(
+                    $data["order_id"] ??
+                    0
+                );
 
-                if (!is_array($items) ||
-                    count($items) === 0) {
-
+                if ($orderId <= 0) {
                     throw new Exception(
-                        "Product items are required"
+                        "order_id is required"
                     );
                 }
 
-                $subtotal = 0.0;
+                $stmt = $con->prepare(
+                    "SELECT
+                        order_id,
+                        user_id,
+                        product_id,
+                        quantity,
+                        amount,
+                        status
+                     FROM orders
+                     WHERE order_id = ?
+                       AND user_id = ?
+                     LIMIT 1
+                     FOR UPDATE"
+                );
 
-                foreach ($items as $item) {
-
-                    $productId =
-                        (int)(
-                            $item["product_id"] ??
-                            0
-                        );
-
-                    $qty =
-                        (int)(
-                            $item["quantity"] ??
-                            0
-                        );
-
-                    if ($productId <= 0 ||
-                        $qty <= 0) {
-
-                        throw new Exception(
-                            "Invalid product_id or quantity"
-                        );
-                    }
-
-                    $stmt =
-                        $con->prepare(
-                            "SELECT
-                                product_id,
-                                price,
-                                stock,
-                                status,
-                                name
-                             FROM products
-                             WHERE product_id = ?
-                             LIMIT 1
-                             FOR UPDATE"
-                        );
-
-                    if (!$stmt) {
-                        throw new Exception(
-                            $con->error
-                        );
-                    }
-
-                    $stmt->bind_param(
-                        "i",
-                        $productId
+                if (!$stmt) {
+                    throw new Exception(
+                        $con->error
                     );
+                }
 
-                    $stmt->execute();
+                $stmt->bind_param(
+                    "ii",
+                    $orderId,
+                    $userId
+                );
 
-                    $result =
-                        $stmt->get_result();
+                $stmt->execute();
 
-                    if ($result->num_rows === 0) {
-                        $stmt->close();
+                $result =
+                    $stmt->get_result();
 
-                        throw new Exception(
-                            "Product not found"
-                        );
-                    }
-
-                    $product =
-                        $result->fetch_assoc();
+                if ($result->num_rows === 0) {
 
                     $stmt->close();
 
-                    if (strtolower(
-                            (string)$product["status"]
-                        ) !== "available") {
-
-                        throw new Exception(
-                            "Product is not available: " .
-                            $product["name"]
-                        );
-                    }
-
-                    if (
-                        (int)$product["stock"] <
-                        $qty
-                    ) {
-                        throw new Exception(
-                            "Insufficient stock: " .
-                            $product["name"]
-                        );
-                    }
-
-                    $subtotal +=
-                        money(
-                            (float)$product["price"] *
-                            $qty
-                        );
+                    throw new Exception(
+                        "Order not found"
+                    );
                 }
 
+                $order =
+                    $result->fetch_assoc();
+
+                $stmt->close();
+
+                $orderStatus =
+                    strtolower(
+                        (string)(
+                            $order["status"] ??
+                            ""
+                        )
+                    );
+
+                if ($orderStatus === "paid") {
+                    throw new Exception(
+                        "Order is already paid"
+                    );
+                }
+
+                if (in_array(
+                    $orderStatus,
+                    [
+                        "cancelled",
+                        "canceled"
+                    ],
+                    true
+                )) {
+                    throw new Exception(
+                        "Order has been cancelled"
+                    );
+                }
+
+                /*
+                order_api.php already created the order
+                and stored the product line amount.
+
+                Delivery:
+                >= ₹1000 -> free
+                < ₹1000  -> ₹40
+                */
+
+                $subtotal =
+                    money(
+                        $order["amount"]
+                    );
+
                 $deliveryFee =
-                    $subtotal <= 0
+                    $subtotal >= 1000
                         ? 0.0
-                        : (
-                            $subtotal >= 1000
-                                ? 0.0
-                                : 40.0
-                        );
+                        : 40.0;
 
                 $serverAmount =
                     money(
@@ -754,12 +822,19 @@ if ($method === "POST") {
                         $deliveryFee
                     );
 
-                if (!arraysEqualFloat(
-                    $clientAmount,
-                    $serverAmount
-                )) {
+                /*
+                If Flutter sends amount, validate it.
+                If it doesn't, server amount is used.
+                */
+
+                if ($clientAmount > 0 &&
+                    !arraysEqualFloat(
+                        $clientAmount,
+                        $serverAmount
+                    )) {
+
                     throw new Exception(
-                        "Payment amount does not match the server-calculated total"
+                        "Payment amount does not match order amount"
                     );
                 }
             }
@@ -770,33 +845,32 @@ if ($method === "POST") {
             |--------------------------------------------------------------------------
             */
 
-            $insert =
-                $con->prepare(
-                    "INSERT INTO payments
-                    (
-                        user_id,
-                        booking_id,
-                        order_id,
-                        payment_type,
-                        amount,
-                        payment_method,
-                        transaction_id,
-                        status,
-                        payment_date
-                    )
-                    VALUES
-                    (
-                        ?,
-                        ?,
-                        NULL,
-                        ?,
-                        ?,
-                        ?,
-                        ?,
-                        'pending',
-                        NOW()
-                    )"
-                );
+            $insert = $con->prepare(
+                "INSERT INTO payments
+                (
+                    user_id,
+                    booking_id,
+                    order_id,
+                    payment_type,
+                    amount,
+                    payment_method,
+                    transaction_id,
+                    status,
+                    payment_date
+                )
+                VALUES
+                (
+                    ?,
+                    ?,
+                    ?,
+                    ?,
+                    ?,
+                    ?,
+                    ?,
+                    'pending',
+                    NOW()
+                )"
+            );
 
             if (!$insert) {
                 throw new Exception(
@@ -805,9 +879,10 @@ if ($method === "POST") {
             }
 
             $insert->bind_param(
-                "iisdss",
+                "iiisdss",
                 $userId,
                 $bookingId,
+                $orderId,
                 $paymentType,
                 $serverAmount,
                 $paymentMethod,
@@ -815,6 +890,7 @@ if ($method === "POST") {
             );
 
             if (!$insert->execute()) {
+
                 $error =
                     $insert->error;
 
@@ -842,6 +918,8 @@ if ($method === "POST") {
                         $paymentType,
                     "booking_id" =>
                         $bookingId,
+                    "order_id" =>
+                        $orderId,
                     "amount" =>
                         $serverAmount,
                     "payment_method" =>
@@ -869,25 +947,23 @@ if ($method === "POST") {
 
     /*
     |--------------------------------------------------------------------------
-    | FINALIZE
+    | FINALIZE PAYMENT
     |--------------------------------------------------------------------------
     */
 
     if ($action === "finalize") {
 
-        $paymentId =
-            (int)(
-                $data["payment_id"] ??
-                0
-            );
+        $paymentId = (int)(
+            $data["payment_id"] ??
+            0
+        );
 
-        $transactionId =
-            trim(
-                (string)(
-                    $data["transaction_id"] ??
-                    ""
-                )
-            );
+        $transactionId = trim(
+            (string)(
+                $data["transaction_id"] ??
+                ""
+            )
+        );
 
         if ($paymentId <= 0) {
             response(
@@ -911,15 +987,14 @@ if ($method === "POST") {
 
         try {
 
-            $stmt =
-                $con->prepare(
-                    "SELECT *
-                     FROM payments
-                     WHERE payment_id = ?
-                       AND user_id = ?
-                     LIMIT 1
-                     FOR UPDATE"
-                );
+            $stmt = $con->prepare(
+                "SELECT *
+                 FROM payments
+                 WHERE payment_id = ?
+                   AND user_id = ?
+                 LIMIT 1
+                 FOR UPDATE"
+            );
 
             if (!$stmt) {
                 throw new Exception(
@@ -939,6 +1014,7 @@ if ($method === "POST") {
                 $stmt->get_result();
 
             if ($result->num_rows === 0) {
+
                 $stmt->close();
 
                 throw new Exception(
@@ -968,6 +1044,7 @@ if ($method === "POST") {
                 );
 
             if ($paymentStatus !== "success") {
+
                 throw new Exception(
                     "Payment is not verified yet"
                 );
@@ -975,7 +1052,10 @@ if ($method === "POST") {
 
             $paymentType =
                 strtolower(
-                    (string)$payment["payment_type"]
+                    (string)(
+                        $payment["payment_type"] ??
+                        ""
+                    )
                 );
 
             /*
@@ -1029,6 +1109,7 @@ if ($method === "POST") {
                     $booking->get_result();
 
                 if ($bookingResult->num_rows === 0) {
+
                     $booking->close();
 
                     throw new Exception(
@@ -1037,8 +1118,7 @@ if ($method === "POST") {
                 }
 
                 $bookingRow =
-                    $bookingResult
-                        ->fetch_assoc();
+                    $bookingResult->fetch_assoc();
 
                 $booking->close();
 
@@ -1050,8 +1130,7 @@ if ($method === "POST") {
                         )
                     );
 
-                if ($bookingStatus !==
-                    "paid") {
+                if ($bookingStatus !== "paid") {
 
                     $update =
                         $con->prepare(
@@ -1106,325 +1185,125 @@ if ($method === "POST") {
             |--------------------------------------------------------------------------
             | PRODUCT FINALIZE
             |--------------------------------------------------------------------------
+            |
+            | IMPORTANT:
+            | order_api.php already created the order and deducted
+            | stock. So we DO NOT create another order here.
+            |--------------------------------------------------------------------------
             */
 
             if ($paymentType === "product") {
 
-                $existingOrderId =
+                $orderId =
                     (int)(
                         $payment["order_id"] ??
                         0
                     );
 
-                if ($existingOrderId > 0) {
-
-                    $con->commit();
-
-                    response(
-                        true,
-                        "Product payment already finalized",
-                        [
-                            "payment_id" =>
-                                $paymentId,
-                            "orders" => [
-                                [
-                                    "order_id" =>
-                                        $existingOrderId
-                                ]
-                            ],
-                            "amount" =>
-                                money(
-                                    $payment["amount"]
-                                ),
-                            "status" =>
-                                "success"
-                        ]
-                    );
-                }
-
-                $items =
-                    $data["items"] ??
-                    [];
-
-                if (!is_array($items) ||
-                    count($items) === 0) {
-
+                if ($orderId <= 0) {
                     throw new Exception(
-                        "Product items are required"
+                        "Payment order ID is missing"
                     );
                 }
 
-                $subtotal = 0.0;
-
-                $cleanItems = [];
-
-                foreach ($items as $item) {
-
-                    $productId =
-                        (int)(
-                            $item["product_id"] ??
-                            0
-                        );
-
-                    $qty =
-                        (int)(
-                            $item["quantity"] ??
-                            0
-                        );
-
-                    if ($productId <= 0 ||
-                        $qty <= 0) {
-
-                        throw new Exception(
-                            "Invalid product_id or quantity"
-                        );
-                    }
-
-                    $stmt =
-                        $con->prepare(
-                            "SELECT
-                                product_id,
-                                name,
-                                price,
-                                stock,
-                                status
-                             FROM products
-                             WHERE product_id = ?
-                             LIMIT 1
-                             FOR UPDATE"
-                        );
-
-                    if (!$stmt) {
-                        throw new Exception(
-                            $con->error
-                        );
-                    }
-
-                    $stmt->bind_param(
-                        "i",
-                        $productId
-                    );
-
-                    $stmt->execute();
-
-                    $result =
-                        $stmt->get_result();
-
-                    if ($result->num_rows === 0) {
-                        $stmt->close();
-
-                        throw new Exception(
-                            "Product not found"
-                        );
-                    }
-
-                    $product =
-                        $result->fetch_assoc();
-
-                    $stmt->close();
-
-                    if (strtolower(
-                            (string)$product["status"]
-                        ) !== "available") {
-
-                        throw new Exception(
-                            "Product is not available: " .
-                            $product["name"]
-                        );
-                    }
-
-                    if (
-                        (int)$product["stock"] <
-                        $qty
-                    ) {
-                        throw new Exception(
-                            "Insufficient stock: " .
-                            $product["name"]
-                        );
-                    }
-
-                    $lineAmount =
-                        money(
-                            (float)$product["price"] *
-                            $qty
-                        );
-
-                    $subtotal +=
-                        $lineAmount;
-
-                    $cleanItems[] = [
-                        "product_id" =>
-                            $productId,
-                        "quantity" =>
-                            $qty,
-                        "amount" =>
-                            $lineAmount,
-                        "name" =>
-                            $product["name"]
-                    ];
-                }
-
-                $deliveryFee =
-                    $subtotal >= 1000
-                        ? 0.0
-                        : 40.0;
-
-                $serverTotal =
-                    money(
-                        $subtotal +
-                        $deliveryFee
-                    );
-
-                $paymentAmount =
-                    money(
-                        $payment["amount"]
-                    );
-
-                if (!arraysEqualFloat(
-                    $serverTotal,
-                    $paymentAmount
-                )) {
-                    throw new Exception(
-                        "Payment amount no longer matches the order total"
-                    );
-                }
-
-                $createdOrders = [];
-                $firstOrderId = 0;
-
-                foreach ($cleanItems as $item) {
-
-                    $insert =
-                        $con->prepare(
-                            "INSERT INTO orders
-                            (
-                                user_id,
-                                product_id,
-                                quantity,
-                                amount,
-                                status,
-                                order_date
-                            )
-                            VALUES
-                            (?, ?, ?, ?, 'paid', CURDATE())"
-                        );
-
-                    if (!$insert) {
-                        throw new Exception(
-                            $con->error
-                        );
-                    }
-
-                    $productId =
-                        (int)$item["product_id"];
-
-                    $qty =
-                        (int)$item["quantity"];
-
-                    $lineAmount =
-                        money($item["amount"]);
-
-                    $insert->bind_param(
-                        "iiid",
-                        $userId,
-                        $productId,
-                        $qty,
-                        $lineAmount
-                    );
-
-                    if (!$insert->execute()) {
-                        throw new Exception(
-                            $insert->error
-                        );
-                    }
-
-                    $orderId =
-                        (int)$insert->insert_id;
-
-                    $insert->close();
-
-                    if ($firstOrderId === 0) {
-                        $firstOrderId =
-                            $orderId;
-                    }
-
-                    $stock =
-                        $con->prepare(
-                            "UPDATE products
-                             SET stock = stock - ?
-                             WHERE product_id = ?"
-                        );
-
-                    if (!$stock) {
-                        throw new Exception(
-                            $con->error
-                        );
-                    }
-
-                    $stock->bind_param(
-                        "ii",
-                        $qty,
-                        $productId
-                    );
-
-                    if (!$stock->execute()) {
-                        throw new Exception(
-                            $stock->error
-                        );
-                    }
-
-                    $stock->close();
-
-                    $createdOrders[] = [
-                        "order_id" =>
-                            $orderId,
-                        "product_id" =>
-                            $productId,
-                        "product_name" =>
-                            $item["name"],
-                        "quantity" =>
-                            $qty,
-                        "amount" =>
-                            $lineAmount,
-                        "status" =>
-                            "paid"
-                    ];
-                }
-
-                if ($firstOrderId <= 0) {
-                    throw new Exception(
-                        "Failed to create order"
-                    );
-                }
-
-                $updatePayment =
+                $orderStmt =
                     $con->prepare(
-                        "UPDATE payments
-                         SET order_id = ?
-                         WHERE payment_id = ?
-                           AND user_id = ?"
+                        "SELECT
+                            order_id,
+                            user_id,
+                            product_id,
+                            quantity,
+                            amount,
+                            status
+                         FROM orders
+                         WHERE order_id = ?
+                           AND user_id = ?
+                         LIMIT 1
+                         FOR UPDATE"
                     );
 
-                if (!$updatePayment) {
+                if (!$orderStmt) {
                     throw new Exception(
                         $con->error
                     );
                 }
 
-                $updatePayment->bind_param(
-                    "iii",
-                    $firstOrderId,
-                    $paymentId,
+                $orderStmt->bind_param(
+                    "ii",
+                    $orderId,
                     $userId
                 );
 
-                if (!$updatePayment->execute()) {
+                $orderStmt->execute();
+
+                $orderResult =
+                    $orderStmt->get_result();
+
+                if ($orderResult->num_rows === 0) {
+
+                    $orderStmt->close();
+
                     throw new Exception(
-                        $updatePayment->error
+                        "Order not found"
                     );
                 }
 
-                $updatePayment->close();
+                $order =
+                    $orderResult->fetch_assoc();
+
+                $orderStmt->close();
+
+                $orderStatus =
+                    strtolower(
+                        (string)(
+                            $order["status"] ??
+                            ""
+                        )
+                    );
+
+                if ($orderStatus === "cancelled" ||
+                    $orderStatus === "canceled") {
+
+                    throw new Exception(
+                        "Order has been cancelled"
+                    );
+                }
+
+                /*
+                Order was already created by order_api.php.
+                Just change pending -> paid.
+                */
+
+                if ($orderStatus !== "paid") {
+
+                    $updateOrder =
+                        $con->prepare(
+                            "UPDATE orders
+                             SET status = 'paid'
+                             WHERE order_id = ?
+                               AND user_id = ?"
+                        );
+
+                    if (!$updateOrder) {
+                        throw new Exception(
+                            $con->error
+                        );
+                    }
+
+                    $updateOrder->bind_param(
+                        "ii",
+                        $orderId,
+                        $userId
+                    );
+
+                    if (!$updateOrder->execute()) {
+                        throw new Exception(
+                            $updateOrder->error
+                        );
+                    }
+
+                    $updateOrder->close();
+                }
 
                 $con->commit();
 
@@ -1435,11 +1314,27 @@ if ($method === "POST") {
                         "payment_id" =>
                             $paymentId,
                         "order_id" =>
-                            $firstOrderId,
+                            $orderId,
                         "total_amount" =>
-                            $serverTotal,
-                        "orders" =>
-                            $createdOrders,
+                            money(
+                                $payment["amount"]
+                            ),
+                        "orders" => [
+                            [
+                                "order_id" =>
+                                    $orderId,
+                                "product_id" =>
+                                    (int)$order["product_id"],
+                                "quantity" =>
+                                    (int)$order["quantity"],
+                                "amount" =>
+                                    money(
+                                        $order["amount"]
+                                    ),
+                                "status" =>
+                                    "paid"
+                            ]
+                        ],
                         "status" =>
                             "success"
                     ]
@@ -1475,17 +1370,13 @@ if ($method === "POST") {
 |--------------------------------------------------------------------------
 | ADMIN PAYMENT STATUS
 |--------------------------------------------------------------------------
-|
-| This is useful for testing.
-| Production should update payment status from
-| the actual payment gateway/webhook.
-|--------------------------------------------------------------------------
 */
 
 if ($method === "PATCH" ||
     $method === "PUT") {
 
     if ($role !== "admin") {
+
         response(
             false,
             "Only admin can update payment status",
@@ -1566,6 +1457,7 @@ if ($method === "PATCH" ||
             $stmt->get_result();
 
         if ($result->num_rows === 0) {
+
             $stmt->close();
 
             throw new Exception(
@@ -1606,11 +1498,11 @@ if ($method === "PATCH" ||
         $update->close();
 
         /*
-        For turf, admin success can immediately
-        confirm the booking.
+        Turf payment:
+        admin success can directly mark booking paid.
 
-        For product, finalizePayment() creates
-        the actual order rows.
+        Product payment:
+        order will be marked paid through finalize.
         */
 
         if (
@@ -1619,6 +1511,7 @@ if ($method === "PATCH" ||
                 (string)$payment["payment_type"]
             ) === "turf"
         ) {
+
             $bookingId =
                 (int)(
                     $payment["booking_id"] ??
@@ -1626,6 +1519,7 @@ if ($method === "PATCH" ||
                 );
 
             if ($bookingId > 0) {
+
                 $bookingUpdate =
                     $con->prepare(
                         "UPDATE bookings
@@ -1679,6 +1573,12 @@ if ($method === "PATCH" ||
         );
     }
 }
+
+/*
+|--------------------------------------------------------------------------
+| UNSUPPORTED
+|--------------------------------------------------------------------------
+*/
 
 response(
     false,
