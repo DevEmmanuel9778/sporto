@@ -108,7 +108,7 @@ function createUserToken(
     $now = time();
 
     return JWT::encode([
-        'iss' => 'sporto_api',
+        'iss' => 'sporto-api',
         'sub' => (string) $userId,
         'id' => $userId,
         'role' => 'user',
